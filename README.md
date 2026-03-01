@@ -226,5 +226,7 @@ Want me to try to isolate the actual logic by filtering out the MBA noise, or fo
 User: remove all the junk and clean the function, identify the pattern and remove it
 ```
 
+![alt text](assets/clean_ctf.png)
+
 ### Batch renaming
 
