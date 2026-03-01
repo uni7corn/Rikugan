@@ -8,6 +8,7 @@ from .qt_compat import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton,
     QWidget, QSizePolicy, Qt, Signal, QTimer,
 )
+from .markdown import md_to_html
 
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
@@ -100,12 +101,17 @@ class UserMessageWidget(QFrame):
 
 
 class AssistantMessageWidget(QFrame):
-    """Displays an assistant message with streaming support."""
+    """Displays an assistant message with streaming support and Markdown rendering."""
+
+    # Render markdown at most every N characters of accumulated delta to avoid
+    # re-converting on every single token during streaming.
+    _RENDER_BATCH = 40
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("message_assistant")
         self._full_text = ""
+        self._pending_delta = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -116,17 +122,28 @@ class AssistantMessageWidget(QFrame):
 
         self._content = QLabel()
         self._content.setWordWrap(True)
-        self._content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._content.setTextFormat(Qt.TextFormat.RichText)
+        self._content.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        self._content.setOpenExternalLinks(True)
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         layout.addWidget(self._content)
 
+    def _render(self) -> None:
+        self._content.setText(md_to_html(self._full_text))
+        self._pending_delta = 0
+
     def append_text(self, delta: str) -> None:
         self._full_text += delta
-        self._content.setText(self._full_text)
+        self._pending_delta += len(delta)
+        if self._pending_delta >= self._RENDER_BATCH:
+            self._render()
 
     def set_text(self, text: str) -> None:
         self._full_text = text
-        self._content.setText(text)
+        self._render()
 
     def full_text(self) -> str:
         return self._full_text
