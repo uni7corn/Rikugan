@@ -2,12 +2,18 @@
 
 An IDA Pro plugin that integrates a multi-provider LLM agent as a first-class reverse engineering companion. Iris provides an agentic loop with streaming, 57 purpose-built IDA tools, 7 built-in analysis skills, MCP client, and a native Qt chat panel, all accessible through a single hotkey.
 
+This project was done together with my friend, Claude code.
+
 
 ## Is this another MCP client?
 
-No, Iris is an agent built to live inside IDA Pro. It does not consume an MCP server to interact with IDA — it has its own agentic loop, context management, and tool orchestration layer running entirely in-process. The agent loop is a generator-based turn cycle: each user message kicks off a stream→execute→repeat pipeline where the LLM response is streamed token-by-token, tool calls are intercepted and dispatched to 57 IDA-native handlers (marshalled to the main thread via `execute_sync`), and the results are fed back as the next turn's context. The loop runs in a background thread while a Qt timer polls events into the UI, so IDA never blocks. It supports automatic error recovery, mid-run user questions (`ask_user`), plan mode for multi-step workflows, and message queuing — all without leaving IDA.
+No, Iris is an agent built to live inside IDA Pro. It does not consume an MCP server to interact with IDA, it has its own agentic loop, context management, and tool orchestration layer running entirely in-process. 
 
-It has a set of tools exposed to the agent that encapsulate many IDA interactions. The agent was really born ***living*** and ***breathing*** reversing.
+The agent loop is a generator-based turn cycle: each user message kicks off a stream->execute->repeat pipeline where the LLM response is streamed token-by-token, tool calls are intercepted and dispatched. 
+
+The results are fed back as the next turn's context. It supports automatic error recovery, mid-run user questions, plan mode for multi-step workflows, and message queuing, all without leaving IDA.
+
+The agent really ***lives*** and ***breath*** reversing.
 
 Advantages:
 
@@ -41,13 +47,26 @@ Also, building agents is an amazing area of study, especially coding with them.
 
 ## Installation
 
-Clone this repository, then on Linux or macOS run:
+Clone this repository, then run the installer for your platform:
 
+**Linux / macOS:**
 ```bash
 ./install.sh
 ```
 
-This will automatically place the plugin in the `~/.idapro/plugins` folder and create its files at `~/.iris/`.
+**Windows:**
+```bat
+install.bat
+```
+
+Both scripts auto-detect your IDA user directory. If detection fails (or you have a non-standard setup), pass the path explicitly:
+
+```bash
+./install.sh /path/to/ida/user/dir
+install.bat "C:\Users\you\AppData\Roaming\Hex-Rays\IDA Pro"
+```
+
+The installer symlinks the plugin into your IDA plugins folder, installs pip dependencies, and creates the Iris config directory.
 
 ### Set your API key
 
