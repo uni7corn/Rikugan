@@ -48,6 +48,7 @@ class ToolDefinition:
     category: str = "general"
     requires_decompiler: bool = False
     mutating: bool = False
+    timeout: Optional[float] = None  # per-tool timeout in seconds (None = use default)
     handler: Optional[Callable] = field(default=None, repr=False)
 
     def to_json_schema(self) -> Dict[str, Any]:
@@ -184,6 +185,7 @@ def tool(
     category: str = "general",
     requires_decompiler: bool = False,
     mutating: bool = False,
+    timeout: Optional[float] = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to register a function as an agent tool.
 
@@ -208,6 +210,7 @@ def tool(
             category=category,
             requires_decompiler=requires_decompiler,
             mutating=mutating,
+            timeout=timeout,
             handler=func,
         )
 

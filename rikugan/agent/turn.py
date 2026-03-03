@@ -26,6 +26,14 @@ class TurnEventType(str, Enum):
     PLAN_STEP_START = "plan_step_start"
     PLAN_STEP_DONE = "plan_step_done"
     TOOL_APPROVAL_REQUEST = "tool_approval_request"
+    EXPLORATION_PHASE_CHANGE = "exploration_phase_change"
+    EXPLORATION_FINDING = "exploration_finding"
+    PATCH_APPLIED = "patch_applied"
+    PATCH_VERIFIED = "patch_verified"
+    SAVE_APPROVAL_REQUEST = "save_approval_request"
+    SAVE_COMPLETED = "save_completed"
+    SAVE_DISCARDED = "save_discarded"
+    MUTATION_RECORDED = "mutation_recorded"
 
 
 @dataclass
@@ -137,4 +145,103 @@ class TurnEvent:
             type=TurnEventType.TOOL_APPROVAL_REQUEST,
             tool_call_id=tool_call_id, tool_name=tool_name, tool_args=args,
             text=description,
+        )
+
+    @staticmethod
+    def exploration_phase_change(
+        from_phase: str, to_phase: str, reason: str = "",
+    ) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.EXPLORATION_PHASE_CHANGE,
+            text=reason,
+            metadata={"from_phase": from_phase, "to_phase": to_phase},
+        )
+
+    @staticmethod
+    def exploration_finding(
+        category: str, summary: str, address: Optional[int] = None,
+        relevance: str = "medium",
+    ) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.EXPLORATION_FINDING,
+            text=summary,
+            metadata={
+                "category": category,
+                "address": f"0x{address:x}" if address is not None else None,
+                "relevance": relevance,
+            },
+        )
+
+    @staticmethod
+    def patch_applied(
+        address: int, description: str, original_hex: str, new_hex: str,
+    ) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.PATCH_APPLIED,
+            text=description,
+            metadata={
+                "address": f"0x{address:x}",
+                "original": original_hex,
+                "new": new_hex,
+            },
+        )
+
+    @staticmethod
+    def patch_verified(address: int, success: bool, result: str) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.PATCH_VERIFIED,
+            text=result,
+            metadata={
+                "address": f"0x{address:x}",
+                "success": success,
+            },
+        )
+
+    @staticmethod
+    def save_approval_request(
+        patch_count: int, total_bytes: int, all_verified: bool,
+        patches_detail: Optional[List[Dict[str, Any]]] = None,
+    ) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.SAVE_APPROVAL_REQUEST,
+            text=f"{patch_count} patches ready ({total_bytes} bytes modified)",
+            metadata={
+                "patch_count": patch_count,
+                "total_bytes": total_bytes,
+                "all_verified": all_verified,
+                "patches": patches_detail or [],
+            },
+        )
+
+    @staticmethod
+    def save_completed(patch_count: int, total_bytes: int) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.SAVE_COMPLETED,
+            text=f"Saved {patch_count} patches ({total_bytes} bytes)",
+            metadata={"patch_count": patch_count, "total_bytes": total_bytes},
+        )
+
+    @staticmethod
+    def save_discarded(patch_count: int, rolled_back: bool) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.SAVE_DISCARDED,
+            text=f"Discarded {patch_count} patches"
+                 + (" (original bytes restored)" if rolled_back else " (in-memory changes persist)"),
+            metadata={"patch_count": patch_count, "rolled_back": rolled_back},
+        )
+
+    @staticmethod
+    def mutation_recorded(
+        tool_name: str, description: str, reversible: bool,
+        reverse_tool: str = "", reverse_args: Optional[Dict[str, Any]] = None,
+    ) -> "TurnEvent":
+        return TurnEvent(
+            type=TurnEventType.MUTATION_RECORDED,
+            tool_name=tool_name,
+            text=description,
+            metadata={
+                "reversible": reversible,
+                "reverse_tool": reverse_tool,
+                "reverse_args": reverse_args or {},
+            },
         )

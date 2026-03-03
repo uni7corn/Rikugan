@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+from ..core.logging import log_debug
 from ..core.types import Message, Role, ToolResult, TokenUsage
 
 # ---------- Token estimation ----------
@@ -39,10 +40,11 @@ def _truncate_tool_result(tr: ToolResult, max_chars: int) -> ToolResult:
     """Return a truncated copy of a tool result if it exceeds max_chars."""
     if not tr.content or len(tr.content) <= max_chars:
         return tr
+    omitted = len(tr.content) - max_chars
     return ToolResult(
         tool_call_id=tr.tool_call_id,
         name=tr.name,
-        content=tr.content[:max_chars] + "\n... [truncated]",
+        content=tr.content[:max_chars] + f"\n... [{omitted} chars omitted]",
         is_error=tr.is_error,
     )
 
@@ -112,6 +114,10 @@ class SessionState:
                     found_ids = {tr.tool_call_id for tr in tool_msg.tool_results}
                     missing = needed_ids - found_ids
                     if missing:
+                        log_debug(
+                            f"Sanitize: patching {len(missing)} orphaned tool_use(s): "
+                            f"{', '.join(missing)}"
+                        )
                         patched_results = list(tool_msg.tool_results)
                         for tc in msg.tool_calls:
                             if tc.id in missing:
@@ -126,6 +132,10 @@ class SessionState:
                         sanitized.append(tool_msg)
                     i += 1
                 else:
+                    log_debug(
+                        f"Sanitize: no tool_result message for "
+                        f"{len(msg.tool_calls)} tool_use(s), inserting stubs"
+                    )
                     stubs = [
                         ToolResult(
                             tool_call_id=tc.id, name=tc.name,

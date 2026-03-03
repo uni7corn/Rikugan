@@ -154,6 +154,47 @@ class TestSessionController(unittest.TestCase):
         self.ctrl.shutdown()
         self.ctrl.shutdown()  # Should not raise
 
+    def test_fork_session_copies_messages(self):
+        """Forking should create a new tab with a deep copy of messages."""
+        self.ctrl.session.add_message(Message(role=Role.USER, content="hello"))
+        self.ctrl.session.add_message(Message(role=Role.ASSISTANT, content="hi"))
+        source_tab = self.ctrl.active_tab_id
+
+        new_tab_id = self.ctrl.fork_session(source_tab)
+        self.assertIsNotNone(new_tab_id)
+        self.assertNotEqual(new_tab_id, source_tab)
+
+        forked = self.ctrl._sessions[new_tab_id]
+        self.assertEqual(len(forked.messages), 2)
+        self.assertEqual(forked.messages[0].content, "hello")
+        self.assertEqual(forked.messages[1].content, "hi")
+        self.assertNotEqual(forked.id, self.ctrl.session.id)
+
+    def test_fork_session_deep_copies(self):
+        """Modifications to forked session should not affect the original."""
+        self.ctrl.session.add_message(Message(role=Role.USER, content="original"))
+        source_tab = self.ctrl.active_tab_id
+
+        new_tab_id = self.ctrl.fork_session(source_tab)
+        forked = self.ctrl._sessions[new_tab_id]
+        forked.add_message(Message(role=Role.USER, content="forked-only"))
+
+        self.assertEqual(len(self.ctrl.session.messages), 1)
+        self.assertEqual(len(forked.messages), 2)
+
+    def test_fork_nonexistent_tab_returns_none(self):
+        result = self.ctrl.fork_session("nonexistent")
+        self.assertIsNone(result)
+
+    def test_fork_records_metadata(self):
+        """Forked session should have forked_from metadata."""
+        source_tab = self.ctrl.active_tab_id
+        source_id = self.ctrl.session.id
+
+        new_tab_id = self.ctrl.fork_session(source_tab)
+        forked = self.ctrl._sessions[new_tab_id]
+        self.assertEqual(forked.metadata.get("forked_from"), source_id)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -260,7 +260,16 @@ class AnthropicProvider(LLMProvider):
         if isinstance(e, anthropic.AuthenticationError):
             raise AuthenticationError(provider="anthropic") from e
         if isinstance(e, anthropic.RateLimitError):
-            raise RateLimitError(provider="anthropic") from e
+            retry_after = 0.0
+            # Try to extract retry-after from response headers
+            resp = getattr(e, "response", None)
+            if resp is not None:
+                retry_hdr = getattr(resp, "headers", {}).get("retry-after", "")
+                try:
+                    retry_after = float(retry_hdr)
+                except (ValueError, TypeError):
+                    pass
+            raise RateLimitError(provider="anthropic", retry_after=retry_after or 5.0) from e
         if isinstance(e, anthropic.BadRequestError):
             msg = str(e)
             if "context" in msg.lower() or "token" in msg.lower():
@@ -277,16 +286,48 @@ class AnthropicProvider(LLMProvider):
         system: str,
     ) -> Dict[str, Any]:
         """Build kwargs dict for messages.create/stream."""
+        formatted_messages = self._format_messages(messages)
+
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": self._format_messages(messages),
+            "messages": formatted_messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+
+        # System prompt with cache_control for prompt caching
         if system:
-            kwargs["system"] = system
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+
         if tools:
-            kwargs["tools"] = self._format_tools(tools)
+            formatted_tools = self._format_tools(tools)
+            # Mark the last tool with cache_control so the full tool list is cached
+            if formatted_tools:
+                formatted_tools[-1]["cache_control"] = {"type": "ephemeral"}
+            kwargs["tools"] = formatted_tools
+
+        # Mark the last user message with cache_control to cache conversation history
+        # (only if there are enough messages for caching to be worthwhile)
+        if len(formatted_messages) >= 4:
+            last_msg = formatted_messages[-1]
+            if isinstance(last_msg.get("content"), list) and last_msg["content"]:
+                last_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
+            elif isinstance(last_msg.get("content"), str):
+                # Convert string content to block format for cache_control
+                last_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": last_msg["content"],
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+
         return kwargs
 
     def chat(

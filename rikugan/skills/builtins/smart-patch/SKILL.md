@@ -1,9 +1,9 @@
 ---
-name: Smart Patch
-description: Modify binary code using natural language — analyze, assemble, and patch
-tags: [patching, assembly, binary, modification]
+name: Smart Patch (Deprecated)
+description: "DEPRECATED: Use smart-patch-ida or smart-patch-binja instead. Generic patching skill for backward compatibility."
+tags: [patching, assembly, binary, modification, deprecated]
 author: Rikugan
-version: 1.0
+version: 1.1
 allowed_tools:
   - read_disassembly
   - read_function_disassembly
@@ -15,8 +15,12 @@ allowed_tools:
   - execute_python
   - redecompile_function
   - nop_instructions
+  - nop_microcode
   - set_comment
+  - exploration_report
 ---
+**NOTE**: This skill is deprecated. Use `/smart-patch-ida` for IDA Pro or `/smart-patch-binja` for Binary Ninja. They contain platform-specific workflows with correct API calls.
+
 Task: Apply targeted binary patches based on the user's natural language description. Analyze the function, identify the minimal set of instructions to change, assemble new instructions, write them, and verify the result.
 
 ## Workflow

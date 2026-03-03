@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import threading
+import time
 import queue
 import traceback
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 from ..core.config import RikuganConfig
-from ..core.errors import AgentError, CancellationError, ProviderError, ToolError
+from ..core.errors import AgentError, CancellationError, ProviderError, RateLimitError, ToolError
 from ..core.logging import log_debug, log_error, log_info
 from ..core.types import Message, Role, StreamChunk, TokenUsage, ToolCall, ToolResult
 from ..providers.base import LLMProvider
 from ..tools.registry import ToolRegistry
 from ..skills.registry import SkillRegistry
+from .context_window import ContextWindowManager
+from .plan_mode import parse_plan as _parse_plan_impl
 from .system_prompt import build_system_prompt
 from .turn import TurnEvent, TurnEventType
+from .mutation import MutationRecord, build_reverse_record, capture_pre_state
+from .subagent import SubagentRunner
+from .exploration_mode import (
+    ExplorationPhase, ExplorationState, Finding, FunctionInfo,
+    KnowledgeBase, ModificationPlan, PatchRecord, PatchSummary, PlannedChange,
+    EXPLORATION_SYSTEM_ADDENDUM, PLAN_SYNTHESIS_PROMPT,
+    EXECUTE_STEP_PROMPT, SAVE_PROMPT,
+)
 from ..state.session import SessionState
 
 _PLAN_GENERATION_PROMPT = (
@@ -64,18 +77,42 @@ class AgentLoop:
         self._consecutive_errors = 0
         self._tools_disabled_for_turn = False
         self._event_queue: queue.Queue[TurnEvent] = queue.Queue()
-        self._user_answer_event = threading.Event()
-        self._user_answer: Optional[str] = None
+        # Thread-safe queues for user answers and tool approvals (no race condition)
+        self._user_answer_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+        self._tool_approval_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+        self._always_allow_scripts = False
         self.plan_mode = False
 
-        # Tool approval state (for execute_python)
-        self._tool_approval_event = threading.Event()
-        self._tool_approved: Optional[str] = None  # "allow", "allow_all", or "deny"
-        self._always_allow_scripts = False
+        # Context window manager — compacts history when approaching limits
+        ctx_window = getattr(config.provider, "context_window", 0) or 128000
+        self._context_manager = ContextWindowManager(
+            max_tokens=ctx_window,
+            compaction_threshold=0.8,
+        )
+
+        # Mutation log for /undo support
+        self._mutation_log: List[MutationRecord] = []
+
+        # Exploration mode state (populated when /modify or /explore is used)
+        self._exploration_state: Optional[ExplorationState] = None
+        self._last_knowledge_base: Optional[KnowledgeBase] = None
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def last_knowledge_base(self) -> Optional[KnowledgeBase]:
+        """The knowledge base from the most recent exploration run."""
+        if self._exploration_state is not None:
+            return self._exploration_state.knowledge_base
+        return self._last_knowledge_base
+
+    def _clear_exploration_state(self) -> None:
+        """Save knowledge base and reset exploration state."""
+        if self._exploration_state is not None:
+            self._last_knowledge_base = self._exploration_state.knowledge_base
+        self._clear_exploration_state()
 
     def cancel(self) -> None:
         """Cancel the current run."""
@@ -83,17 +120,33 @@ class AgentLoop:
 
     def submit_user_answer(self, answer: str) -> None:
         """Submit an answer to an ask_user question (called from UI thread)."""
-        self._user_answer = answer
-        self._user_answer_event.set()
+        # Drain any stale value, then put the new one
+        try:
+            self._user_answer_queue.get_nowait()
+        except queue.Empty:
+            pass
+        self._user_answer_queue.put(answer)
 
     def submit_tool_approval(self, decision: str) -> None:
         """Submit tool approval decision: 'allow', 'allow_all', or 'deny'."""
-        self._tool_approved = decision
-        self._tool_approval_event.set()
+        try:
+            self._tool_approval_queue.get_nowait()
+        except queue.Empty:
+            pass
+        self._tool_approval_queue.put(decision)
 
     def _check_cancelled(self) -> None:
         if self._cancelled.is_set():
             raise CancellationError("Agent run cancelled")
+
+    def _wait_for_queue(self, q: "queue.Queue[str]") -> str:
+        """Block until a value arrives on `q`, checking for cancellation."""
+        while True:
+            self._check_cancelled()
+            try:
+                return q.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
     def _build_system_prompt(self) -> str:
         binary_info = None
@@ -115,6 +168,11 @@ class AgentLoop:
         if self.skills:
             skill_summary = self.skills.get_summary_for_prompt()
 
+        # Derive IDB directory for persistent memory loading
+        idb_dir = ""
+        if self.session.idb_path:
+            idb_dir = os.path.dirname(self.session.idb_path)
+
         return build_system_prompt(
             host_name=self.host_name,
             binary_info=binary_info,
@@ -122,6 +180,7 @@ class AgentLoop:
             current_address=current_address,
             tool_names=self.tools.list_names(),
             skill_summary=skill_summary,
+            idb_dir=idb_dir,
         )
 
     def _resolve_skill(self, user_message: str) -> tuple:
@@ -145,14 +204,7 @@ class AgentLoop:
     @staticmethod
     def _parse_plan(text: str) -> List[str]:
         """Parse a numbered plan from LLM text into step strings."""
-        import re
-        steps = []
-        for line in text.strip().splitlines():
-            line = line.strip()
-            m = re.match(r"^\d+[.)]\s+(.+)", line)
-            if m:
-                steps.append(m.group(1).strip())
-        return steps
+        return _parse_plan_impl(text)
 
     def _execute_step(
         self,
@@ -208,6 +260,616 @@ class AgentLoop:
 
         yield TurnEvent.plan_step_done(step_index, "completed")
 
+    def _run_phase1_subagent(
+        self,
+        state: ExplorationState,
+        user_message: str,
+        exploration_system: str,
+    ) -> Generator[TurnEvent, None, None]:
+        """Run exploration Phase 1 as an isolated subagent.
+
+        The subagent gets its own SessionState / context window.
+        Only the KnowledgeBase summary comes back to the parent.
+        """
+        runner = SubagentRunner(
+            provider=self.provider,
+            tool_registry=self.tools,
+            config=self.config,
+            host_name=self.host_name,
+            skill_registry=self.skills,
+        )
+
+        log_info("Phase 1 running as subagent (isolated context)")
+        kb = yield from runner.run_exploration(
+            user_goal=user_message,
+            max_turns=state.max_explore_turns,
+            idb_path=self.session.idb_path or "",
+        )
+
+        # Merge subagent knowledge base into parent state
+        state.knowledge_base = kb
+        state.knowledge_base.user_goal = user_message
+
+        # Inject summary into parent context (compact, not raw output)
+        summary = kb.to_summary()
+        if summary:
+            summary_msg = Message(role=Role.USER, content=(
+                "[SYSTEM] Subagent exploration complete. Summary:\n\n" + summary
+            ))
+            self.session.add_message(summary_msg)
+
+        # Transition to plan if ready
+        if kb.has_minimum_for_planning:
+            state.transition_to(ExplorationPhase.PLAN)
+            yield TurnEvent.exploration_phase_change(
+                "explore", "plan",
+                "Subagent exploration complete. Moving to planning.",
+            )
+        else:
+            yield TurnEvent.error_event(
+                "Subagent exploration finished without sufficient findings. "
+                f"Gap: {kb.planning_gap_description}. "
+                "Try a more specific request."
+            )
+            self._clear_exploration_state()
+
+    def _run_phase1_inline(
+        self,
+        state: ExplorationState,
+        exploration_system: str,
+        tools_schema: List,
+        explore_only: bool,
+    ) -> Generator[TurnEvent, None, None]:
+        """Run exploration Phase 1 inline (in the parent's context)."""
+        while state.phase == ExplorationPhase.EXPLORE:
+            self._check_cancelled()
+            state.explore_turns += 1
+            state.total_turns += 1
+
+            if state.explore_turns > state.max_explore_turns:
+                if state.knowledge_base.has_minimum_for_planning and not explore_only:
+                    state.transition_to(ExplorationPhase.PLAN)
+                    yield TurnEvent.exploration_phase_change(
+                        "explore", "plan",
+                        f"Exploration turn limit reached ({state.max_explore_turns}). "
+                        "Moving to planning with current findings.",
+                    )
+                    break
+                else:
+                    yield TurnEvent.error_event(
+                        f"Exploration turn limit reached ({state.max_explore_turns}) "
+                        "without sufficient findings for planning. "
+                        "Try a more specific request."
+                    )
+                    self._clear_exploration_state()
+                    return
+
+            yield TurnEvent.turn_start(state.total_turns)
+
+            try:
+                assistant_text, tool_calls, last_usage, raw_parts = yield from self._stream_llm_turn(
+                    exploration_system, tools_schema,
+                )
+            except CancellationError:
+                yield TurnEvent.cancelled_event()
+                self._clear_exploration_state()
+                return
+            except ProviderError as e:
+                yield TurnEvent.error_event(str(e))
+                self._clear_exploration_state()
+                return
+
+            if assistant_text:
+                yield TurnEvent.text_done(assistant_text)
+
+            assistant_msg = Message(
+                role=Role.ASSISTANT, content=assistant_text,
+                tool_calls=tool_calls, token_usage=last_usage,
+            )
+            if raw_parts is not None:
+                assistant_msg._raw_parts = raw_parts
+            self.session.add_message(assistant_msg)
+
+            if not tool_calls:
+                yield TurnEvent.turn_end(state.total_turns)
+                if explore_only:
+                    break
+                if state.knowledge_base.has_minimum_for_planning:
+                    state.transition_to(ExplorationPhase.PLAN)
+                    yield TurnEvent.exploration_phase_change(
+                        "explore", "plan",
+                        "Agent finished exploration. Moving to planning.",
+                    )
+                break
+
+            tool_results: List[ToolResult] = yield from self._execute_tool_calls(tool_calls)
+            tool_msg = Message(role=Role.TOOL, tool_results=tool_results)
+            self.session.add_message(tool_msg)
+
+            if self._consecutive_errors >= 5:
+                self._tools_disabled_for_turn = True
+                self._consecutive_errors = 0
+                hint = Message(
+                    role=Role.USER,
+                    content=(
+                        "[SYSTEM] You have failed 5 consecutive tool calls. "
+                        "Tools are temporarily disabled. Explain what went wrong."
+                    ),
+                )
+                self.session.add_message(hint)
+            elif self._consecutive_errors >= 3:
+                hint = Message(
+                    role=Role.USER,
+                    content=(
+                        "[SYSTEM] You have failed 3 consecutive tool calls. "
+                        "Try a different strategy or explain what is failing."
+                    ),
+                )
+                self.session.add_message(hint)
+
+            yield TurnEvent.turn_end(state.total_turns)
+
+    def _run_exploration_mode(
+        self,
+        user_message: str,
+        system_prompt: str,
+        tools_schema: List,
+        explore_only: bool = False,
+    ) -> Generator[TurnEvent, None, None]:
+        """Run the agent in exploration mode: explore → plan → patch → save.
+
+        A single continuous generator that transitions through phases,
+        keeping all accumulated context in the ExplorationState.
+        """
+        state = ExplorationState(explore_only=explore_only)
+        state.knowledge_base.user_goal = user_message
+        self._exploration_state = state
+
+        # Safe default — avoid NameError if Phase 2 is skipped
+        steps: List[str] = []
+
+        # Augment system prompt with exploration instructions
+        exploration_system = system_prompt + EXPLORATION_SYSTEM_ADDENDUM
+
+        log_info(f"Exploration mode started: goal={user_message[:80]!r}, explore_only={explore_only}")
+        yield TurnEvent.exploration_phase_change("", "explore", f"Starting exploration: {user_message[:60]}")
+
+        # ── Phase 1: EXPLORE ──────────────────────────────────────────
+        # Agent uses all tools + exploration_report + phase_transition
+        # Runs until agent calls phase_transition(to_phase="plan")
+        # or hits the turn limit.
+        #
+        # When NOT explore_only, Phase 1 runs as a subagent to keep
+        # the parent context clean for Phases 2-4.  The subagent gets
+        # its own session (context window), and only the structured
+        # KnowledgeBase summary comes back to the parent.
+
+        use_subagent = not explore_only  # subagent for /modify, inline for /explore
+
+        if use_subagent:
+            # ── Subagent exploration ──
+            yield from self._run_phase1_subagent(state, user_message, exploration_system)
+        else:
+            # ── Inline exploration (explore-only mode) ──
+            yield from self._run_phase1_inline(state, exploration_system, tools_schema, explore_only)
+
+        # If explore-only, we're done after Phase 1
+        if explore_only:
+            summary = state.knowledge_base.to_summary()
+            if summary:
+                summary_msg = Message(role=Role.USER, content=(
+                    "[SYSTEM] Exploration complete. Here is a summary of findings:\n\n"
+                    + summary
+                ))
+                self.session.add_message(summary_msg)
+            log_info("Exploration mode finished (explore-only)")
+            self._clear_exploration_state()
+            return
+
+        # ── Phase 2: PLAN ─────────────────────────────────────────────
+        # Inject synthesis prompt with accumulated knowledge.
+        # Text-only turn — no tools.
+
+        if state.phase == ExplorationPhase.PLAN:
+            knowledge_summary = state.knowledge_base.to_summary()
+            plan_prompt = PLAN_SYNTHESIS_PROMPT.format(knowledge_summary=knowledge_summary)
+            plan_msg = Message(role=Role.USER, content=plan_prompt)
+            self.session.add_message(plan_msg)
+
+            state.total_turns += 1
+            yield TurnEvent.turn_start(state.total_turns)
+            try:
+                plan_text, _, usage, _ = yield from self._stream_llm_turn(
+                    exploration_system, None,  # text-only, no tools
+                )
+            except (CancellationError, ProviderError) as e:
+                yield TurnEvent.error_event(str(e))
+                self._clear_exploration_state()
+                return
+
+            if plan_text:
+                yield TurnEvent.text_done(plan_text)
+
+            plan_msg_resp = Message(role=Role.ASSISTANT, content=plan_text, token_usage=usage)
+            self.session.add_message(plan_msg_resp)
+            yield TurnEvent.turn_end(state.total_turns)
+
+            # Parse the plan into steps
+            steps = self._parse_plan(plan_text)
+            if not steps:
+                yield TurnEvent.error_event(
+                    "Failed to generate a valid modification plan from exploration findings."
+                )
+                self._clear_exploration_state()
+                return
+
+            yield TurnEvent.plan_generated(steps)
+
+            # Build ModificationPlan from parsed steps — extract addresses from
+            # step text where possible (e.g. "Patch JZ at 0x401248 to JNZ")
+            changes: List[PlannedChange] = []
+            for i, step in enumerate(steps):
+                addr_match = re.search(r"0x([0-9a-fA-F]+)", step)
+                addr = int(addr_match.group(1), 16) if addr_match else 0
+                changes.append(PlannedChange(
+                    index=i, target_address=addr,
+                    current_behavior="", proposed_behavior=step,
+                    patch_strategy=step,
+                ))
+            state.modification_plan = ModificationPlan(
+                changes=changes,
+                rationale=plan_text,
+            )
+
+            # ── User approval gate ────────────────────────────────────
+            yield TurnEvent.user_question(
+                "Do you want to execute this modification plan?",
+                ["Approve", "Reject"],
+                "__plan_approval__",
+            )
+
+            answer = self._wait_for_queue(self._user_answer_queue).strip().lower()
+            if answer not in ("approve", "1", "yes", "y"):
+                yield TurnEvent.error_event("Modification plan rejected by user.")
+                self._clear_exploration_state()
+                return
+
+            state.transition_to(ExplorationPhase.EXECUTE)
+            yield TurnEvent.exploration_phase_change("plan", "execute", "Plan approved. Executing patches.")
+
+            # Persist the approved plan to RIKUGAN.md for cross-session reference
+            self._persist_plan(user_message, steps)
+
+        # ── Phase 3: EXECUTE ──────────────────────────────────────────
+        # Execute each planned change using the smart-patch methodology.
+        # Patches are in-memory only.
+
+        if state.phase == ExplorationPhase.EXECUTE:
+            for i, step_desc in enumerate(steps):
+                self._check_cancelled()
+                state.execute_turns += 1
+
+                if state.execute_turns > state.max_execute_turns:
+                    yield TurnEvent.error_event(
+                        f"Execute turn limit reached ({state.max_execute_turns}). "
+                        "Some patches may not have been applied."
+                    )
+                    break
+
+                yield TurnEvent.plan_step_start(i, step_desc)
+
+                execute_prompt = EXECUTE_STEP_PROMPT.format(
+                    index=i + 1, total=len(steps), description=step_desc,
+                )
+                exec_msg = Message(role=Role.USER, content=execute_prompt)
+                self.session.add_message(exec_msg)
+
+                # Mini agent loop for this step
+                for _st in range(10):
+                    self._check_cancelled()
+                    state.total_turns += 1
+                    yield TurnEvent.turn_start(state.total_turns)
+
+                    try:
+                        a_text, t_calls, t_usage, r_parts = yield from self._stream_llm_turn(
+                            exploration_system, tools_schema,
+                        )
+                    except CancellationError:
+                        yield TurnEvent.cancelled_event()
+                        self._clear_exploration_state()
+                        return
+                    except ProviderError as e:
+                        yield TurnEvent.error_event(str(e))
+                        self._clear_exploration_state()
+                        return
+
+                    if a_text:
+                        yield TurnEvent.text_done(a_text)
+
+                    a_msg = Message(
+                        role=Role.ASSISTANT, content=a_text,
+                        tool_calls=t_calls, token_usage=t_usage,
+                    )
+                    if r_parts is not None:
+                        a_msg._raw_parts = r_parts
+                    self.session.add_message(a_msg)
+
+                    if not t_calls:
+                        yield TurnEvent.turn_end(state.total_turns)
+                        break
+
+                    t_results: List[ToolResult] = yield from self._execute_tool_calls(t_calls)
+                    t_msg = Message(role=Role.TOOL, tool_results=t_results)
+                    self.session.add_message(t_msg)
+                    yield TurnEvent.turn_end(state.total_turns)
+
+                yield TurnEvent.plan_step_done(i, "completed")
+
+            # ── Phase 4: SAVE ─────────────────────────────────────────
+            state.transition_to(ExplorationPhase.SAVE)
+            yield TurnEvent.exploration_phase_change("execute", "save", "All patches applied. Awaiting save decision.")
+
+            # Build patch summary for the save approval UI
+            summary = PatchSummary(patches=list(state.patches_applied))
+            summary.compute()
+            patches_detail = [
+                {
+                    "address": f"0x{p.address:x}",
+                    "description": p.description,
+                    "original": p.original_bytes.hex() if p.original_bytes else "",
+                    "new": p.new_bytes.hex() if p.new_bytes else "",
+                    "verified": p.verified,
+                }
+                for p in state.patches_applied
+            ]
+
+            # Emit the structured save approval request
+            yield TurnEvent.save_approval_request(
+                patch_count=len(state.patches_applied),
+                total_bytes=summary.total_bytes_modified,
+                all_verified=summary.all_verified,
+                patches_detail=patches_detail,
+            )
+
+            save_answer = self._wait_for_queue(self._user_answer_queue).strip().lower()
+            if save_answer in ("save all", "save", "1", "yes", "y"):
+                # Patches are already in the analysis database (IDB/BNDB).
+                # Inform the user how to persist.
+                save_info = Message(role=Role.USER, content=(
+                    "[SYSTEM] Patches are saved in the analysis database. "
+                    "To create a patched binary:\n"
+                    "- **IDA Pro**: File → Produce file → Create patched file\n"
+                    "- **Binary Ninja**: File → Save / Save As"
+                ))
+                self.session.add_message(save_info)
+                yield TurnEvent.save_completed(len(state.patches_applied), summary.total_bytes_modified)
+                log_info("Exploration mode: patches saved")
+            else:
+                # Attempt to roll back patches if we have original bytes
+                rolled_back = False
+                if state.patches_applied:
+                    rollback_parts = []
+                    for p in reversed(state.patches_applied):
+                        if p.original_bytes:
+                            rollback_parts.append(
+                                f"import ida_bytes; ida_bytes.patch_bytes(0x{p.address:x}, {list(p.original_bytes)})"
+                                if self.host_name == "IDA Pro"
+                                else f"bv.write(0x{p.address:x}, {list(p.original_bytes)})"
+                            )
+                    if rollback_parts:
+                        rollback_code = "; ".join(rollback_parts)
+                        try:
+                            self.tools.execute("execute_python", {"code": rollback_code})
+                            rolled_back = True
+                            log_info("Exploration mode: patches rolled back via execute_python")
+                        except Exception as e:
+                            log_error(f"Exploration mode: rollback failed: {e}")
+
+                if rolled_back:
+                    discard_msg = Message(role=Role.USER, content=(
+                        "[SYSTEM] Patches discarded. Original bytes have been restored."
+                    ))
+                else:
+                    discard_msg = Message(role=Role.USER, content=(
+                        "[SYSTEM] Patches discarded. The in-memory changes persist "
+                        "until the analysis database is reloaded without saving."
+                    ))
+                self.session.add_message(discard_msg)
+                yield TurnEvent.save_discarded(len(state.patches_applied), rolled_back)
+                log_info(f"Exploration mode: patches discarded by user (rolled_back={rolled_back})")
+
+        log_info("Exploration mode finished")
+        self._clear_exploration_state()
+
+    def _persist_plan(self, user_goal: str, steps: List[str]) -> None:
+        """Save an approved plan to RIKUGAN.md for cross-session reference."""
+        idb_dir = ""
+        if self.session.idb_path:
+            idb_dir = os.path.dirname(self.session.idb_path)
+        if not idb_dir:
+            return
+
+        import time as _time
+        md_path = os.path.join(idb_dir, "RIKUGAN.md")
+        try:
+            if not os.path.exists(md_path):
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        "# Rikugan Persistent Memory\n\n"
+                        "This file persists across sessions. "
+                        "The agent reads the first 200 lines into its system prompt.\n\n"
+                    )
+            with open(md_path, "a", encoding="utf-8") as f:
+                timestamp = _time.strftime("%Y-%m-%d %H:%M")
+                f.write(f"\n## Plan ({timestamp})\n")
+                f.write(f"Goal: {user_goal[:200]}\n")
+                for i, step in enumerate(steps, 1):
+                    f.write(f"{i}. {step}\n")
+                f.write("\n")
+            log_info(f"Plan persisted to RIKUGAN.md ({len(steps)} steps)")
+        except OSError as e:
+            log_error(f"Failed to persist plan to RIKUGAN.md: {e}")
+
+    def _handle_memory_command(self) -> Generator[TurnEvent, None, None]:
+        """Show current RIKUGAN.md contents in chat."""
+        idb_dir = ""
+        if self.session.idb_path:
+            idb_dir = os.path.dirname(self.session.idb_path)
+        if not idb_dir:
+            yield TurnEvent.text_done("No IDB/BNDB path set — persistent memory is not available.")
+            return
+
+        md_path = os.path.join(idb_dir, "RIKUGAN.md")
+        if not os.path.isfile(md_path):
+            yield TurnEvent.text_done(
+                f"No persistent memory file found.\n\n"
+                f"A `RIKUGAN.md` file will be created in `{idb_dir}` "
+                f"when the agent first uses `save_memory`."
+            )
+            return
+
+        try:
+            with open(md_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            if not content.strip():
+                yield TurnEvent.text_done("RIKUGAN.md exists but is empty.")
+            else:
+                yield TurnEvent.text_done(f"**Persistent Memory** (`{md_path}`):\n\n{content}")
+        except OSError as e:
+            yield TurnEvent.error_event(f"Failed to read RIKUGAN.md: {e}")
+
+    def _handle_undo_command(self, raw_cmd: str) -> Generator[TurnEvent, None, None]:
+        """Undo the last N mutations."""
+        # Parse count from "/undo" or "/undo N"
+        parts = raw_cmd.strip().split()
+        count = 1
+        if len(parts) > 1:
+            try:
+                count = int(parts[1])
+            except ValueError:
+                yield TurnEvent.error_event(f"Invalid undo count: {parts[1]}. Usage: /undo [N]")
+                return
+
+        if not self._mutation_log:
+            yield TurnEvent.text_done("Nothing to undo — mutation log is empty.")
+            return
+
+        count = min(count, len(self._mutation_log))
+        undone = 0
+        errors = []
+        for _ in range(count):
+            record = self._mutation_log.pop()
+            if not record.reversible:
+                errors.append(f"Cannot undo: {record.description} (not reversible)")
+                continue
+            try:
+                self.tools.execute(record.reverse_tool, record.reverse_arguments)
+                undone += 1
+                log_info(f"Undo: {record.description}")
+            except Exception as e:
+                errors.append(f"Failed to undo {record.description}: {e}")
+                log_error(f"Undo failed: {record.description}: {e}")
+
+        parts_out = []
+        if undone:
+            parts_out.append(f"Undid {undone} mutation(s).")
+        if errors:
+            parts_out.append("\n".join(errors))
+        yield TurnEvent.text_done("\n".join(parts_out) if parts_out else "Nothing undone.")
+
+    def _handle_mcp_command(self) -> Generator[TurnEvent, None, None]:
+        """Show MCP server health and status."""
+        # Access the MCP manager via the tool registry's registered tools
+        # We check for MCP-prefixed tools and try to reach the manager
+        mcp_tools = [n for n in self.tools.list_names() if n.startswith("mcp_")]
+        if not mcp_tools:
+            yield TurnEvent.text_done("No MCP servers configured or connected.")
+            return
+
+        lines = ["**MCP Server Status**\n"]
+        # Group tools by server prefix
+        servers: Dict[str, List[str]] = {}
+        for name in mcp_tools:
+            # MCP tools are named mcp_<server>_<tool>
+            parts = name.split("_", 2)
+            server = parts[1] if len(parts) >= 3 else "unknown"
+            servers.setdefault(server, []).append(name)
+
+        for server, tools in sorted(servers.items()):
+            lines.append(f"- **{server}**: {len(tools)} tools registered")
+
+        lines.append(f"\n**Total**: {len(mcp_tools)} MCP tools available")
+        yield TurnEvent.text_done("\n".join(lines))
+
+    def _handle_doctor_command(self) -> Generator[TurnEvent, None, None]:
+        """Diagnose common setup issues."""
+        issues: List[str] = []
+        ok: List[str] = []
+
+        # Check provider
+        if self.provider:
+            ok.append(f"Provider: {self.config.provider.name} ({self.config.provider.model})")
+        else:
+            issues.append("No LLM provider configured")
+
+        # Check API key
+        if self.config.provider.api_key:
+            ok.append("API key: configured")
+        else:
+            env_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            if env_key:
+                ok.append("API key: from environment variable")
+            else:
+                issues.append("No API key configured (set in config or environment)")
+
+        # Check tools
+        tool_count = len(self.tools.list_names())
+        if tool_count > 0:
+            ok.append(f"Tools: {tool_count} registered")
+        else:
+            issues.append("No tools registered — check plugin initialization")
+
+        # Check skills
+        if self.skills:
+            slugs = self.skills.list_slugs()
+            ok.append(f"Skills: {len(slugs)} loaded")
+        else:
+            issues.append("No skill registry — skills won't be available")
+
+        # Check context window
+        ctx = self.config.provider.context_window
+        if ctx >= 8000:
+            ok.append(f"Context window: {ctx:,} tokens")
+        else:
+            issues.append(f"Context window very small: {ctx} tokens")
+
+        # Check config validation
+        config_errors = self.config.validate()
+        if config_errors:
+            issues.extend(f"Config: {e}" for e in config_errors)
+        else:
+            ok.append("Config: valid")
+
+        # Check IDB path for persistent memory
+        if self.session.idb_path:
+            ok.append(f"IDB/BNDB: {self.session.idb_path}")
+        else:
+            issues.append("No IDB/BNDB path — persistent memory disabled")
+
+        # Format output
+        lines = ["**Rikugan Doctor**\n"]
+        if ok:
+            lines.append("**OK:**")
+            for item in ok:
+                lines.append(f"  - {item}")
+        if issues:
+            lines.append("\n**Issues:**")
+            for item in issues:
+                lines.append(f"  - {item}")
+        else:
+            lines.append("\nNo issues found.")
+        yield TurnEvent.text_done("\n".join(lines))
+
     def _run_plan_mode(
         self,
         user_message: str,
@@ -248,12 +910,7 @@ class AgentLoop:
             "__plan_approval__",
         )
 
-        self._user_answer_event.clear()
-        self._user_answer = None
-        while not self._user_answer_event.wait(0.5):
-            self._check_cancelled()
-
-        answer = (self._user_answer or "").strip().lower()
+        answer = self._wait_for_queue(self._user_answer_queue).strip().lower()
         if answer not in ("approve", "1", "yes", "y"):
             yield TurnEvent.error_event("Plan rejected by user.")
             return
@@ -265,13 +922,60 @@ class AgentLoop:
 
     def _stream_llm_turn(
         self, system_prompt: str, tools_schema: Optional[List],
+        max_retries: int = 3,
     ) -> Generator[TurnEvent, None, Tuple[str, List[ToolCall], Optional[TokenUsage], Any]]:
-        """Stream one LLM call, yielding events.
+        """Stream one LLM call, yielding events. Retries on transient errors.
 
         Returns ``(text, tool_calls, usage, raw_parts)`` where *raw_parts* is
         provider-specific opaque data (e.g. Gemini parts with thought_signatures)
         that should be stored on the :class:`Message` for faithful history replay.
         """
+        last_error: Optional[Exception] = None
+        for attempt in range(max_retries):
+            if attempt > 0:
+                # Exponential backoff: 1s, 2s, 4s...
+                backoff = min(2 ** (attempt - 1), 10)
+                if isinstance(last_error, RateLimitError) and last_error.retry_after > 0:
+                    backoff = last_error.retry_after
+                yield TurnEvent.text_delta(
+                    f"\n[Retrying in {backoff:.0f}s... (attempt {attempt + 1}/{max_retries})]\n"
+                )
+                deadline = time.monotonic() + backoff
+                while time.monotonic() < deadline:
+                    self._check_cancelled()
+                    time.sleep(min(0.5, deadline - time.monotonic()))
+
+            try:
+                result = yield from self._stream_llm_turn_inner(system_prompt, tools_schema)
+                return result
+            except (RateLimitError,) as e:
+                last_error = e
+                log_error(f"Retryable error (attempt {attempt + 1}/{max_retries}): {e}")
+                continue
+            except ProviderError as e:
+                if e.retryable and attempt < max_retries - 1:
+                    last_error = e
+                    log_error(f"Retryable provider error (attempt {attempt + 1}/{max_retries}): {e}")
+                    continue
+                raise
+
+        # All retries exhausted
+        raise last_error  # type: ignore[misc]
+
+    def _stream_llm_turn_inner(
+        self, system_prompt: str, tools_schema: Optional[List],
+    ) -> Generator[TurnEvent, None, Tuple[str, List[ToolCall], Optional[TokenUsage], Any]]:
+        """Stream one LLM call, yielding events (no retry logic)."""
+        # Compact context if approaching the token limit
+        if self._context_manager.should_compact():
+            log_info(
+                f"Context compaction triggered (usage ratio: "
+                f"{self._context_manager.usage_ratio:.1%})"
+            )
+            self.session.messages = self._context_manager.compact_messages(
+                self.session.messages
+            )
+
         assistant_text = ""
         tool_calls: List[ToolCall] = []
         current_tool_args: Dict[str, str] = {}
@@ -314,14 +1018,21 @@ class AgentLoop:
                 raw_args = current_tool_args.get(tc_id, "")
                 try:
                     args = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as je:
+                    log_error(f"Malformed tool arguments for {tc_name} (id={tc_id}): {je}. Raw: {raw_args[:200]}")
                     args = {}
+                    # Emit an error event so the UI shows the parse failure
+                    yield TurnEvent.error_event(
+                        f"Warning: malformed arguments for tool '{tc_name}'. "
+                        "The tool call will proceed with empty arguments."
+                    )
 
                 tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=args))
                 yield TurnEvent.tool_call_done(tc_id, tc_name, raw_args)
 
             if chunk.usage:
                 last_usage = chunk.usage
+                self._context_manager.update_usage(chunk.usage)
                 yield TurnEvent.usage_update(chunk.usage)
 
             # Capture provider-specific raw parts (e.g. Gemini thought_signatures)
@@ -375,16 +1086,17 @@ class AgentLoop:
         if self._always_allow_scripts:
             return True
 
+        # In explore-only mode, skip approval for execute_python
+        # (read-only analysis context — no binary writes)
+        if (self._exploration_state is not None
+                and self._exploration_state.explore_only):
+            return True
+
         args_str = json.dumps(tc.arguments, indent=2)
         description = self._describe_tool_call(tc.name, tc.arguments)
         yield TurnEvent.tool_approval_request(tc.id, tc.name, args_str, description)
 
-        self._tool_approval_event.clear()
-        self._tool_approved = None
-        while not self._tool_approval_event.wait(0.5):
-            self._check_cancelled()
-
-        decision = (self._tool_approved or "deny").lower()
+        decision = self._wait_for_queue(self._tool_approval_queue).lower()
         if decision == "allow_all":
             self._always_allow_scripts = True
             return True
@@ -397,6 +1109,183 @@ class AgentLoop:
         tool_results: List[ToolResult] = []
         for tc in tool_calls:
             self._check_cancelled()
+
+            # exploration_report: log a structured finding (exploration mode)
+            if tc.name == "exploration_report" and self._exploration_state is not None:
+                state = self._exploration_state
+                category = tc.arguments.get("category", "general")
+                address_raw = tc.arguments.get("address")
+                address = None
+                if address_raw is not None:
+                    try:
+                        address = int(str(address_raw), 0)
+                    except (ValueError, TypeError):
+                        pass
+                summary = tc.arguments.get("summary", "")
+                evidence = tc.arguments.get("evidence", "")
+                relevance = tc.arguments.get("relevance", "medium")
+
+                finding = Finding(
+                    category=category, address=address,
+                    summary=summary, evidence=evidence, relevance=relevance,
+                )
+                state.knowledge_base.add_finding(finding)
+
+                # If it's a function_purpose finding, also register in relevant_functions
+                if category == "function_purpose" and address is not None:
+                    func_name = tc.arguments.get("function_name", f"sub_{address:x}")
+                    state.knowledge_base.add_function(FunctionInfo(
+                        address=address, name=func_name,
+                        summary=summary, relevance=relevance,
+                    ))
+
+                # If it's a patch_result finding, build a PatchRecord and track it
+                if category == "patch_result" and address is not None:
+                    original_hex = tc.arguments.get("original_hex", "")
+                    new_hex = tc.arguments.get("new_hex", "")
+                    try:
+                        original_bytes = bytes.fromhex(original_hex.replace(" ", "")) if original_hex else b""
+                    except ValueError:
+                        original_bytes = b""
+                    try:
+                        new_bytes = bytes.fromhex(new_hex.replace(" ", "")) if new_hex else b""
+                    except ValueError:
+                        new_bytes = b""
+                    patch_record = PatchRecord(
+                        address=address,
+                        original_bytes=original_bytes,
+                        new_bytes=new_bytes,
+                        description=summary,
+                        verified="verif" in evidence.lower() or "confirm" in evidence.lower(),
+                        verification_result=evidence,
+                    )
+                    state.patches_applied.append(patch_record)
+                    yield TurnEvent.patch_applied(
+                        address, summary, original_hex, new_hex,
+                    )
+
+                content = f"Finding logged: [{category}] {summary}"
+                tr = ToolResult(
+                    tool_call_id=tc.id, name=tc.name,
+                    content=content, is_error=False,
+                )
+                tool_results.append(tr)
+                yield TurnEvent.tool_result_event(tc.id, tc.name, content, False)
+                yield TurnEvent.exploration_finding(category, summary, address, relevance)
+                continue
+
+            # phase_transition: request transition to next exploration phase
+            if tc.name == "phase_transition" and self._exploration_state is not None:
+                state = self._exploration_state
+                to_phase_str = tc.arguments.get("to_phase", "")
+                reason = tc.arguments.get("reason", "")
+                try:
+                    to_phase = ExplorationPhase(to_phase_str)
+                except ValueError:
+                    content = f"Invalid phase: '{to_phase_str}'. Valid: {[p.value for p in ExplorationPhase]}"
+                    tr = ToolResult(
+                        tool_call_id=tc.id, name=tc.name,
+                        content=content, is_error=True,
+                    )
+                    tool_results.append(tr)
+                    yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+                    continue
+
+                allowed, deny_reason = state.can_transition_to(to_phase)
+                if not allowed:
+                    content = f"Cannot transition to {to_phase_str}: {deny_reason}"
+                    tr = ToolResult(
+                        tool_call_id=tc.id, name=tc.name,
+                        content=content, is_error=True,
+                    )
+                    tool_results.append(tr)
+                    yield TurnEvent.tool_result_event(tc.id, tc.name, content, True)
+                    continue
+
+                old_phase = state.phase.value
+                state.transition_to(to_phase)
+                content = f"Phase transition: {old_phase} → {to_phase_str}. {reason}"
+                tr = ToolResult(
+                    tool_call_id=tc.id, name=tc.name,
+                    content=content, is_error=False,
+                )
+                tool_results.append(tr)
+                yield TurnEvent.tool_result_event(tc.id, tc.name, content, False)
+                yield TurnEvent.exploration_phase_change(old_phase, to_phase_str, reason)
+                continue
+
+            # save_memory: persist a fact to RIKUGAN.md
+            if tc.name == "save_memory":
+                fact = tc.arguments.get("fact", "")
+                category = tc.arguments.get("category", "general")
+                if not fact:
+                    content = "Error: 'fact' is required."
+                    is_err = True
+                else:
+                    idb_dir = ""
+                    if self.session.idb_path:
+                        idb_dir = os.path.dirname(self.session.idb_path)
+                    if not idb_dir:
+                        content = "Error: No IDB/BNDB path set; cannot determine where to save memory."
+                        is_err = True
+                    else:
+                        md_path = os.path.join(idb_dir, "RIKUGAN.md")
+                        try:
+                            # Auto-create with template header if missing
+                            if not os.path.exists(md_path):
+                                with open(md_path, "w", encoding="utf-8") as f:
+                                    f.write(
+                                        "# Rikugan Persistent Memory\n\n"
+                                        "This file persists across sessions. "
+                                        "The agent reads the first 200 lines into its system prompt.\n\n"
+                                    )
+                            with open(md_path, "a", encoding="utf-8") as f:
+                                f.write(f"- [{category}] {fact}\n")
+                            content = f"Saved to RIKUGAN.md: [{category}] {fact}"
+                            is_err = False
+                            log_info(f"save_memory: [{category}] {fact[:80]}")
+                        except OSError as e:
+                            content = f"Error writing RIKUGAN.md: {e}"
+                            is_err = True
+                tr = ToolResult(
+                    tool_call_id=tc.id, name=tc.name,
+                    content=content, is_error=is_err,
+                )
+                tool_results.append(tr)
+                yield TurnEvent.tool_result_event(tc.id, tc.name, content, is_err)
+                continue
+
+            # spawn_subagent: run an isolated agent loop with its own context
+            if tc.name == "spawn_subagent":
+                task = tc.arguments.get("task", "")
+                max_turns = tc.arguments.get("max_turns", 20)
+                if not task:
+                    content = "Error: 'task' is required."
+                    is_err = True
+                else:
+                    try:
+                        runner = SubagentRunner(
+                            provider=self.provider,
+                            tool_registry=self.tools,
+                            config=self.config,
+                            host_name=self.host_name,
+                            skill_registry=self.skills,
+                        )
+                        content = yield from runner.run_task(task, max_turns=max_turns)
+                        if not content:
+                            content = "(Subagent produced no output)"
+                        is_err = False
+                    except Exception as e:
+                        content = f"Subagent error: {e}"
+                        is_err = True
+                        log_error(f"spawn_subagent failed: {e}")
+                tr = ToolResult(
+                    tool_call_id=tc.id, name=tc.name,
+                    content=content, is_error=is_err,
+                )
+                tool_results.append(tr)
+                yield TurnEvent.tool_result_event(tc.id, tc.name, content, is_err)
+                continue
 
             # activate_skill: load skill body and return as tool result
             if tc.name == "activate_skill":
@@ -426,12 +1315,7 @@ class AgentLoop:
                 options = tc.arguments.get("options", [])
                 yield TurnEvent.user_question(question, options, tc.id)
 
-                self._user_answer_event.clear()
-                self._user_answer = None
-                while not self._user_answer_event.wait(0.5):
-                    self._check_cancelled()
-
-                answer = self._user_answer or ""
+                answer = self._wait_for_queue(self._user_answer_queue)
                 tr = ToolResult(
                     tool_call_id=tc.id, name=tc.name,
                     content=f"User answered: {answer}", is_error=False,
@@ -452,11 +1336,36 @@ class AgentLoop:
                     yield TurnEvent.tool_result_event(tc.id, tc.name, tr.content, True)
                     continue
 
+            # Mutation tracking: capture pre-state for mutating tools
+            defn = self.tools.get(tc.name)
+            is_mutating = defn is not None and defn.mutating
+
+            pre_state: Dict[str, Any] = {}
+            if is_mutating:
+                pre_state = capture_pre_state(
+                    tc.name, tc.arguments,
+                    lambda name, args: self.tools.execute(name, args),
+                )
+
             log_debug(f"Executing tool {tc.name}")
             try:
                 result = self.tools.execute(tc.name, tc.arguments)
                 is_error = False
                 self._consecutive_errors = 0
+
+                # Record mutation for undo
+                if is_mutating:
+                    record = build_reverse_record(tc.name, tc.arguments, pre_state)
+                    if record is not None:
+                        self._mutation_log.append(record)
+                        log_debug(f"Mutation recorded: {record.description}")
+                        yield TurnEvent.mutation_recorded(
+                            tool_name=record.tool_name,
+                            description=record.description,
+                            reversible=record.reversible,
+                            reverse_tool=record.reverse_tool,
+                            reverse_args=record.reverse_arguments,
+                        )
             except ToolError as e:
                 result = f"Error: {e}"
                 is_error = True
@@ -488,14 +1397,41 @@ class AgentLoop:
         self.session.is_running = True
 
         try:
-            # Detect /plan prefix before skill resolution
+            # Detect /plan, /modify, /explore prefixes before skill resolution
             use_plan_mode = False
+            use_exploration_mode = False
+            explore_only = False
             stripped = user_message.strip()
             if stripped.lower().startswith("/plan "):
                 use_plan_mode = True
                 user_message = stripped[6:].strip()
+            elif stripped.lower().startswith("/modify "):
+                use_exploration_mode = True
+                user_message = stripped[8:].strip()
+            elif stripped.lower().startswith("/explore "):
+                use_exploration_mode = True
+                explore_only = True
+                user_message = stripped[9:].strip()
+            elif stripped.lower() == "/memory":
+                # Show current RIKUGAN.md contents
+                yield from self._handle_memory_command()
+                return
+            elif stripped.lower().startswith("/undo"):
+                # Undo last N mutations
+                yield from self._handle_undo_command(stripped)
+                return
+            elif stripped.lower() == "/mcp":
+                yield from self._handle_mcp_command()
+                return
+            elif stripped.lower() == "/doctor":
+                yield from self._handle_doctor_command()
+                return
 
             user_message, active_skill = self._resolve_skill(user_message)
+
+            # If the skill specifies mode: exploration, activate exploration mode
+            if active_skill and active_skill.mode == "exploration":
+                use_exploration_mode = True
 
             user_msg = Message(role=Role.USER, content=user_message)
             self.session.add_message(user_msg)
@@ -540,6 +1476,161 @@ class AgentLoop:
                 }
                 tools_schema.append(_ACTIVATE_SKILL_SCHEMA)
 
+            # Append exploration pseudo-tools when in exploration mode
+            if use_exploration_mode:
+                _EXPLORATION_REPORT_SCHEMA = {
+                    "type": "function",
+                    "function": {
+                        "name": "exploration_report",
+                        "description": (
+                            "Log a structured finding during binary exploration. "
+                            "Call this whenever you discover something relevant to "
+                            "the user's goal: a function's purpose, a key constant, "
+                            "a data structure, or a hypothesis about what to change."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "string",
+                                    "description": "Type of finding.",
+                                    "enum": [
+                                        "function_purpose", "data_structure",
+                                        "constant", "hypothesis", "string_ref",
+                                        "import_usage", "patch_result", "general",
+                                    ],
+                                },
+                                "address": {
+                                    "type": "integer",
+                                    "description": "Address related to this finding (hex or decimal).",
+                                },
+                                "function_name": {
+                                    "type": "string",
+                                    "description": "Name of the function (for function_purpose findings).",
+                                },
+                                "summary": {
+                                    "type": "string",
+                                    "description": "Brief summary of the finding.",
+                                },
+                                "evidence": {
+                                    "type": "string",
+                                    "description": "Supporting evidence (e.g. decompiled code snippet).",
+                                },
+                                "relevance": {
+                                    "type": "string",
+                                    "description": "How relevant to the user's goal.",
+                                    "enum": ["low", "medium", "high"],
+                                },
+                                "original_hex": {
+                                    "type": "string",
+                                    "description": "Original bytes as hex string (for patch_result category). E.g. '74 05'.",
+                                },
+                                "new_hex": {
+                                    "type": "string",
+                                    "description": "New patched bytes as hex string (for patch_result category). E.g. '75 05'.",
+                                },
+                            },
+                            "required": ["category", "summary"],
+                        },
+                    },
+                }
+                _PHASE_TRANSITION_SCHEMA = {
+                    "type": "function",
+                    "function": {
+                        "name": "phase_transition",
+                        "description": (
+                            "Request to move to the next exploration phase. "
+                            "Call with to_phase='plan' when you have identified "
+                            "all locations that need to change and have formed "
+                            "concrete hypotheses. Requires at least 1 relevant "
+                            "function and 1 hypothesis logged via exploration_report."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "to_phase": {
+                                    "type": "string",
+                                    "description": "Target phase to transition to.",
+                                    "enum": ["plan"],
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Why you're ready to transition.",
+                                },
+                            },
+                            "required": ["to_phase", "reason"],
+                        },
+                    },
+                }
+                tools_schema.append(_EXPLORATION_REPORT_SCHEMA)
+                tools_schema.append(_PHASE_TRANSITION_SCHEMA)
+
+            # Append save_memory pseudo-tool for cross-session persistence
+            if self.session.idb_path:
+                _SAVE_MEMORY_SCHEMA = {
+                    "type": "function",
+                    "function": {
+                        "name": "save_memory",
+                        "description": (
+                            "Save a fact to persistent memory (RIKUGAN.md). "
+                            "Use this to remember important findings across sessions: "
+                            "function purposes, naming conventions, architecture notes, "
+                            "or analysis results that would be useful in future sessions."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "fact": {
+                                    "type": "string",
+                                    "description": "The fact or finding to remember.",
+                                },
+                                "category": {
+                                    "type": "string",
+                                    "description": "Category of the memory.",
+                                    "enum": [
+                                        "function_purpose", "architecture",
+                                        "naming_convention", "prior_analysis",
+                                        "data_structure", "general",
+                                    ],
+                                },
+                            },
+                            "required": ["fact", "category"],
+                        },
+                    },
+                }
+                tools_schema.append(_SAVE_MEMORY_SCHEMA)
+
+            # Append spawn_subagent pseudo-tool for delegating complex subtasks
+            _SPAWN_SUBAGENT_SCHEMA = {
+                "type": "function",
+                "function": {
+                    "name": "spawn_subagent",
+                    "description": (
+                        "Spawn an isolated subagent to handle a complex subtask. "
+                        "The subagent has its own context window and can use all "
+                        "available tools. It returns a concise summary of its "
+                        "findings. Use this to delegate research-heavy tasks "
+                        "(e.g. 'analyze all functions referencing the score string') "
+                        "without filling your own context with raw tool output."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": "The task for the subagent to perform.",
+                            },
+                            "max_turns": {
+                                "type": "integer",
+                                "description": "Maximum turns for the subagent (default: 20).",
+                            },
+                        },
+                        "required": ["task"],
+                    },
+                },
+            }
+            tools_schema.append(_SPAWN_SUBAGENT_SCHEMA)
+
             # Append the ask_user pseudo-tool so the LLM can ask the user
             _ASK_USER_SCHEMA = {
                 "type": "function",
@@ -570,6 +1661,14 @@ class AgentLoop:
             tools_schema.append(_ASK_USER_SCHEMA)
 
             log_debug(f"Agent run started: {len(tools_schema)} tools, msg={user_message[:80]!r}")
+
+            # Exploration mode: explore → plan → patch → save
+            if use_exploration_mode:
+                yield from self._run_exploration_mode(
+                    user_message, system_prompt, tools_schema,
+                    explore_only=explore_only,
+                )
+                return
 
             # Plan mode: generate plan → approval → step-by-step execution
             if use_plan_mode or self.plan_mode:

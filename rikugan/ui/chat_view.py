@@ -10,7 +10,8 @@ from .qt_compat import (
     QScrollArea, QVBoxLayout, QWidget, QSizePolicy, QTimer, Qt, Signal,
 )
 from .message_widgets import (
-    AssistantMessageWidget, ErrorMessageWidget, QueuedMessageWidget,
+    AssistantMessageWidget, ErrorMessageWidget, ExplorationFindingWidget,
+    ExplorationPhaseWidget, QueuedMessageWidget,
     ThinkingWidget, ToolApprovalWidget, ToolBatchWidget, ToolCallWidget,
     UserMessageWidget, UserQuestionWidget,
 )
@@ -271,6 +272,35 @@ class ChatView(QScrollArea):
             )
             widget.approved.connect(self._on_tool_approval)
             self._insert_widget(widget)
+            self._scroll_to_bottom()
+
+        elif etype == TurnEventType.EXPLORATION_PHASE_CHANGE:
+            self._hide_thinking()
+            self._flush_batch()
+            meta = event.metadata
+            self._insert_widget(ExplorationPhaseWidget(
+                meta.get("from_phase", ""),
+                meta.get("to_phase", ""),
+                event.text,
+            ))
+            self._scroll_to_bottom()
+
+        elif etype == TurnEventType.EXPLORATION_FINDING:
+            meta = event.metadata
+            self._insert_widget(ExplorationFindingWidget(
+                meta.get("category", "general"),
+                event.text,
+                meta.get("address"),
+                meta.get("relevance", "medium"),
+            ))
+            self._scroll_to_bottom()
+
+        elif etype == TurnEventType.SAVE_APPROVAL_REQUEST:
+            self._hide_thinking()
+            self._flush_batch()
+            # Rendered as a user question with save options
+            options = ["Save All", "Discard All"]
+            self._insert_widget(UserQuestionWidget(event.text, options))
             self._scroll_to_bottom()
 
         elif etype == TurnEventType.CANCELLED:

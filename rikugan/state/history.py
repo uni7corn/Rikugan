@@ -10,6 +10,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+from ..constants import SESSION_SCHEMA_VERSION
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug
 from .session import SessionState
@@ -26,6 +27,7 @@ class SessionHistory:
         """Save a session and return the file path."""
         path = os.path.join(self._dir, f"{session.id}.json")
         data = {
+            "schema_version": SESSION_SCHEMA_VERSION,
             "id": session.id,
             "created_at": session.created_at,
             "provider_name": session.provider_name,

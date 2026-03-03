@@ -11,8 +11,11 @@ rikugan/
 ├── agent/                    # Agent loop & prompt logic (host-agnostic)
 │   ├── loop.py               # AgentLoop: generator-based turn cycle
 │   ├── turn.py               # TurnEvent / TurnEventType definitions
-│   ├── context_window.py     # Context-window management
+│   ├── context_window.py     # Context-window management (threshold compaction)
+│   ├── exploration_mode.py   # Exploration state machine (4 phases)
+│   ├── mutation.py           # MutationRecord, build_reverse_record, capture_pre_state
 │   ├── plan_mode.py          # Plan-mode step orchestration
+│   ├── subagent.py           # SubagentRunner — isolated AgentLoop for tasks
 │   ├── system_prompt.py      # build_system_prompt() dispatcher
 │   └── prompts/              # Host-specific system prompts
 │       ├── base.py           # Shared prompt sections (discipline, renaming, etc.)
@@ -94,8 +97,8 @@ rikugan/
 │
 ├── skills/                   # Skill system (host-agnostic)
 │   ├── registry.py           # SkillRegistry — discovery & loading
-│   ├── loader.py             # SKILL.md frontmatter parser
-│   └── builtins/             # 9 built-in analysis skills
+│   ├── loader.py             # SKILL.md frontmatter parser (mode field support)
+│   └── builtins/             # 12 built-in skills
 │       ├── malware-analysis/
 │       ├── linux-malware/
 │       ├── deobfuscation/
@@ -104,24 +107,28 @@ rikugan/
 │       ├── ctf/
 │       ├── generic-re/
 │       ├── ida-scripting/    # IDAPython API skill with full reference
-│       └── binja-scripting/  # Binary Ninja Python API skill with full reference
+│       ├── binja-scripting/  # Binary Ninja Python API skill with full reference
+│       ├── modify/           # Exploration mode: autonomous binary modification
+│       ├── smart-patch-ida/  # IDA-specific binary patching workflow
+│       └── smart-patch-binja/ # Binary Ninja-specific patching workflow
 │
 ├── state/                    # Session persistence (host-agnostic)
 │   ├── session.py            # SessionState — message history, token tracking
 │   └── history.py            # SessionHistory — auto-save/restore per file
 │
 └── ui/                       # Shared UI widgets (Qt, host-agnostic)
-    ├── panel_core.py         # PanelCore — multi-tab chat, export, event routing
-    ├── session_controller_base.py  # SessionControllerBase — multi-session orchestration
+    ├── panel_core.py         # PanelCore — multi-tab chat, export, mutation log, event routing
+    ├── session_controller_base.py  # SessionControllerBase — multi-session, fork support
     ├── chat_view.py          # Chat message display widget (queued message support)
     ├── input_area.py         # User input text area with skill autocomplete
     ├── context_bar.py        # Binary context status bar
-    ├── message_widgets.py    # Message bubble widgets (tool calls, approval dialogs)
+    ├── message_widgets.py    # Message bubble widgets (tool calls, exploration, approval)
+    ├── mutation_log_view.py  # MutationLogPanel — mutation history with undo
     ├── markdown.py           # Markdown rendering for assistant messages
     ├── plan_view.py          # Plan-mode UI
     ├── settings_dialog.py    # Settings dialog (screen-aware sizing)
     ├── styles.py             # Qt stylesheet constants
-    └── qt_compat.py          # Qt compatibility layer (PyQt5/PySide6)
+    └── qt_compat.py          # Qt compatibility layer (PySide6)
 ```
 
 Entry points (root directory):
@@ -133,28 +140,46 @@ Entry points (root directory):
 The agent uses a **generator-based turn cycle** (`rikugan/agent/loop.py`):
 
 ```
-User message → build system prompt → stream LLM response → intercept tool calls → execute tools → feed results back → repeat
+User message → command detection → skill resolution → build system prompt
+    → stream LLM response → intercept tool calls → execute tools → feed results back → repeat
 ```
 
 1. **User sends a message** — the UI calls `SessionControllerBase.start_agent(user_message)`
-2. **System prompt is built** — `build_system_prompt()` selects the host-specific base prompt and appends binary context, current position, available tools, and active skills
-3. **AgentLoop.run()** is a generator that yields `TurnEvent` objects to the UI:
-   - `TEXT_DELTA` — streaming token from the LLM
-   - `TOOL_CALL` — LLM wants to call a tool
+2. **Command detection** — `/plan`, `/modify`, `/explore`, `/memory`, `/undo`, `/mcp`, `/doctor` are handled as special commands
+3. **Skill resolution** — `/slug` prefixes are matched to skills; the skill body is injected into the prompt
+4. **System prompt is built** — `build_system_prompt()` selects the host-specific base prompt and appends binary context, current position, available tools, active skills, and persistent memory (RIKUGAN.md)
+5. **AgentLoop.run()** is a generator that yields `TurnEvent` objects to the UI:
+   - `TEXT_DELTA` / `TEXT_DONE` — streaming/complete assistant text
+   - `TOOL_CALL_START` / `TOOL_CALL_DONE` — LLM requested a tool call
    - `TOOL_RESULT` — tool execution result
-   - `TURN_COMPLETE` — LLM finished a turn
-   - `ERROR` — something went wrong
-4. **Tool calls** are intercepted from the LLM stream, dispatched via `ToolRegistry.execute()`, and the results are appended to the conversation as the next turn's context
-5. **The loop repeats** until the LLM produces a response with no tool calls, or the user cancels
-6. **BackgroundAgentRunner** wraps the generator in a background thread; IDA API calls are marshalled to the main thread via `@idasync`
+   - `TURN_START` / `TURN_END` — turn boundaries
+   - `EXPLORATION_*` — exploration mode events (phase changes, findings)
+   - `MUTATION_RECORDED` — mutation tracked for undo
+   - `ERROR` / `CANCELLED` — error or user cancellation
+6. **Tool calls** are intercepted from the LLM stream, dispatched via `ToolRegistry.execute()` (with per-tool timeout), and the results are appended to the conversation
+7. **Pseudo-tools** (`exploration_report`, `phase_transition`, `save_memory`, `spawn_subagent`) are handled inline
+8. **Mutating tools** have their pre-state captured and reverse operations recorded for `/undo`
+9. **Context compaction** kicks in when token usage exceeds 80% of the window
+10. **The loop repeats** until the LLM produces a response with no tool calls, or the user cancels
+11. **BackgroundAgentRunner** wraps the generator in a background thread; IDA API calls are marshalled to the main thread via `@idasync`
 
-Plan mode uses the same loop but adds a planning step: the LLM first generates a numbered plan, then executes each step in sequence.
+### Modes
+
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| **Normal** | Any message | Standard stream → tool → repeat loop |
+| **Plan** | `/plan <msg>` | Generate plan → user approves → execute steps |
+| **Exploration** | `/modify <msg>` | 4-phase: EXPLORE (subagent) → PLAN → EXECUTE → SAVE |
+| **Explore-only** | `/explore <msg>` | Autonomous read-only investigation, no patching |
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical details on all modes, subagents, mutation tracking, and internal data flows.
 
 ## Multi-Tab Chat & Session Persistence
 
 - Each tab is an independent `SessionState` with its own message history and token tracking
 - `SessionControllerBase` manages a dict of `_sessions: Dict[str, SessionState]` keyed by tab ID
 - `PanelCore` uses a `QTabWidget` with closable tabs and a "+" button for new tabs
+- **Session fork**: right-click a tab → "Fork Session" to deep copy the conversation into a new tab (branch from a checkpoint)
 - Sessions are auto-saved per file (IDB/BNDB path) and restored when re-opening the same file
 - Opening a different file resets all tabs and attempts to restore that file's saved sessions
 

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable, Dict, List, Optional
 
 from ..core.errors import ToolError, ToolNotFoundError, ToolValidationError
 from ..core.logging import log_debug
 from ..constants import TOOL_RESULT_TRUNCATE_LEN
 from .base import ToolDefinition
+
+# Default timeout for tool execution (seconds).  Per-tool overrides via ToolDefinition.timeout.
+_DEFAULT_TOOL_TIMEOUT = 30.0
+
+# Shared executor — single thread is sufficient since IDA tools run on main thread via idasync
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-timeout")
 
 
 class ToolRegistry:
@@ -36,16 +43,21 @@ class ToolRegistry:
                 continue
 
             try:
-                if expected == "integer" and not isinstance(value, int):
-                    # Handle "30", "30.0", "0x1e" etc.
-                    coerced[key] = int(float(value))
-                elif expected == "integer" and isinstance(value, bool):
-                    # bool is a subclass of int but should be coerced to plain int
-                    coerced[key] = int(value)
+                if expected == "integer":
+                    # bool is a subclass of int — check bool FIRST
+                    if isinstance(value, bool):
+                        coerced[key] = int(value)
+                    elif not isinstance(value, int):
+                        # Handle "30", "30.0", "0x1e" etc.
+                        coerced[key] = int(float(value))
                 elif expected == "number" and not isinstance(value, (int, float)):
                     coerced[key] = float(value)
                 elif expected == "boolean" and not isinstance(value, bool):
-                    coerced[key] = str(value).lower() in ("true", "1", "yes")
+                    # Coerce int 0/1 and string "true"/"false"
+                    if isinstance(value, int):
+                        coerced[key] = bool(value)
+                    else:
+                        coerced[key] = str(value).lower() in ("true", "1", "yes")
                 elif expected == "string" and not isinstance(value, str):
                     coerced[key] = str(value)
             except (ValueError, TypeError):
@@ -90,9 +102,16 @@ class ToolRegistry:
             raise ToolError(f"Tool {name} has no handler", tool_name=name)
 
         arguments = self._coerce_arguments(defn, arguments)
+        timeout = defn.timeout if defn.timeout is not None else _DEFAULT_TOOL_TIMEOUT
 
         try:
-            result = defn.handler(**arguments)
+            future = _executor.submit(defn.handler, **arguments)
+            result = future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise ToolError(
+                f"Tool {name} timed out after {timeout}s", tool_name=name,
+            )
         except (ToolError, ToolValidationError):
             raise
         except TypeError as e:

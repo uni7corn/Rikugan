@@ -21,6 +21,9 @@ from .protocol import (
 )
 
 
+_HEARTBEAT_INTERVAL = 30.0  # seconds between heartbeat pings
+
+
 class MCPClient:
     """Client for a single MCP server process.
 
@@ -33,15 +36,28 @@ class MCPClient:
         self.name = config.name
         self._process: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
         self._pending: Dict[int, queue.Queue] = {}
         self._next_id = 1
         self._lock = threading.Lock()
         self._tools: List[MCPToolSchema] = []
         self._running = False
+        self._started = False  # True only after successful handshake
+        self._healthy = True  # False if heartbeat fails
 
     @property
     def is_running(self) -> bool:
-        return self._running and self._process is not None and self._process.poll() is None
+        return (
+            self._started
+            and self._running
+            and self._process is not None
+            and self._process.poll() is None
+        )
+
+    @property
+    def is_healthy(self) -> bool:
+        """True if the server is running and the last heartbeat succeeded."""
+        return self.is_running and self._healthy
 
     def start(self, timeout: float = 10.0) -> None:
         """Spawn the MCP server process, perform initialize handshake, and list tools."""
@@ -101,6 +117,15 @@ class MCPClient:
         except Exception as e:
             log_error(f"MCP[{self.name}]: tools/list failed: {e}")
             # Non-fatal — server may have no tools yet
+
+        self._started = True
+
+        # Start heartbeat thread
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, daemon=True,
+            name=f"mcp-heartbeat-{self.name}",
+        )
+        self._heartbeat_thread.start()
 
     def stop(self) -> None:
         """Shut down the MCP server process."""
@@ -222,6 +247,31 @@ class MCPClient:
             self._process.stdin.flush()
         except OSError as e:
             log_debug(f"MCP[{self.name}]: notification write failed: {e}")
+
+    def _heartbeat_loop(self) -> None:
+        """Background thread: periodically ping the server to detect dead processes."""
+        import time
+        while self._running:
+            time.sleep(_HEARTBEAT_INTERVAL)
+            if not self._running:
+                break
+            try:
+                # Use a short timeout for the heartbeat ping
+                self._send_request("ping", {}, timeout=5.0)
+                if not self._healthy:
+                    log_info(f"MCP[{self.name}]: heartbeat recovered")
+                self._healthy = True
+            except MCPTimeoutError:
+                if self._healthy:
+                    log_error(f"MCP[{self.name}]: heartbeat timed out — server may be unresponsive")
+                self._healthy = False
+            except (MCPConnectionError, MCPError):
+                if self._healthy:
+                    log_error(f"MCP[{self.name}]: heartbeat failed — server may be dead")
+                self._healthy = False
+            except Exception:
+                # Don't crash the heartbeat thread on unexpected errors
+                self._healthy = False
 
     def _read_loop(self) -> None:
         """Background thread: read JSON-RPC responses from stdout."""

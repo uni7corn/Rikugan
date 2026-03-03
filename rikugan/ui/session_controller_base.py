@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -72,6 +73,27 @@ class SessionControllerBase:
         tab_id = self._create_session()
         log_info(f"Created new tab {tab_id}")
         return tab_id
+
+    def fork_session(self, source_tab_id: str) -> Optional[str]:
+        """Duplicate a session into a new tab. Returns new tab_id or None."""
+        source = self._sessions.get(source_tab_id)
+        if source is None:
+            return None
+        new_tab_id = uuid.uuid4().hex[:8]
+        forked = SessionState(
+            provider_name=source.provider_name,
+            model_name=source.model_name,
+            idb_path=source.idb_path,
+        )
+        forked.messages = copy.deepcopy(source.messages)
+        forked.total_usage = copy.copy(source.total_usage)
+        forked.last_prompt_tokens = source.last_prompt_tokens
+        forked.current_turn = source.current_turn
+        forked.metadata = dict(source.metadata)
+        forked.metadata["forked_from"] = source.id
+        self._sessions[new_tab_id] = forked
+        log_info(f"Forked session {source.id} → new tab {new_tab_id}")
+        return new_tab_id
 
     def close_tab(self, tab_id: str) -> None:
         """Save and remove a tab's session."""

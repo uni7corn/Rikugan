@@ -2,14 +2,49 @@
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
 from ..constants import SYSTEM_PROMPT_VERSION
+from ..core.logging import log_debug
 from .prompts.binja import BINJA_BASE_PROMPT
 from .prompts.ida import IDA_BASE_PROMPT
 
 _HOST_PROMPTS = {"IDA Pro": IDA_BASE_PROMPT, "Binary Ninja": BINJA_BASE_PROMPT}
 _BASE_PROMPT = IDA_BASE_PROMPT  # backward compat alias
+
+# Maximum number of lines to load from RIKUGAN.md
+_MAX_MEMORY_LINES = 200
+
+
+def _load_persistent_memory(idb_dir: str = "") -> Optional[str]:
+    """Load RIKUGAN.md from the IDB/BNDB directory (first 200 lines).
+
+    The file acts as persistent cross-session memory for the agent.
+    """
+    if not idb_dir:
+        return None
+
+    md_path = os.path.join(idb_dir, "RIKUGAN.md")
+    if not os.path.isfile(md_path):
+        return None
+
+    try:
+        with open(md_path, "r", encoding="utf-8") as f:
+            lines = []
+            for i, line in enumerate(f):
+                if i >= _MAX_MEMORY_LINES:
+                    lines.append(f"\n... (truncated at {_MAX_MEMORY_LINES} lines)")
+                    break
+                lines.append(line)
+        content = "".join(lines).strip()
+        if content:
+            log_debug(f"Loaded persistent memory from {md_path} ({len(lines)} lines)")
+            return content
+    except OSError as e:
+        log_debug(f"Failed to load RIKUGAN.md: {e}")
+
+    return None
 
 
 def build_system_prompt(
@@ -20,10 +55,19 @@ def build_system_prompt(
     extra_context: Optional[str] = None,
     tool_names: Optional[List[str]] = None,
     skill_summary: Optional[str] = None,
+    idb_dir: Optional[str] = None,
 ) -> str:
     """Build the full system prompt with optional binary context."""
     base_prompt = _HOST_PROMPTS.get(host_name, IDA_BASE_PROMPT)
     parts = [base_prompt]
+
+    # Persistent memory — loaded early so it's part of the cached prefix
+    memory = _load_persistent_memory(idb_dir or "")
+    if memory:
+        parts.append(
+            f"\n## Persistent Memory (RIKUGAN.md)\n"
+            f"The following notes persist across sessions for this binary:\n\n{memory}"
+        )
 
     if binary_info:
         parts.append(f"\n## Current Binary\n{binary_info}")

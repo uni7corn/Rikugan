@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ..constants import (
     CONFIG_DIR_NAME,
     CONFIG_FILE_NAME,
+    CONFIG_SCHEMA_VERSION,
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
@@ -63,12 +64,34 @@ class RikuganConfig:
     def mcp_config_path(self) -> str:
         return os.path.join(self._config_dir, MCP_CONFIG_FILE)
 
+    def validate(self) -> List[str]:
+        """Validate config values. Returns list of error messages (empty = valid)."""
+        errors: List[str] = []
+        if not (0.0 <= self.provider.temperature <= 2.0):
+            errors.append(f"temperature {self.provider.temperature} out of range [0, 2]")
+        if self.provider.max_tokens <= 0:
+            errors.append(f"max_tokens must be positive, got {self.provider.max_tokens}")
+        if self.provider.context_window <= 0:
+            errors.append(f"context_window must be positive, got {self.provider.context_window}")
+        return errors
+
     def save(self) -> None:
+        errors = self.validate()
+        if errors:
+            from ..core.logging import log_error
+            for err in errors:
+                log_error(f"Config validation: {err}")
+            # Clamp to valid ranges rather than refusing to save
+            self.provider.temperature = max(0.0, min(2.0, self.provider.temperature))
+            self.provider.max_tokens = max(1, self.provider.max_tokens)
+            self.provider.context_window = max(1024, self.provider.context_window)
+
         os.makedirs(self._config_dir, exist_ok=True)
         # Snapshot current provider into the providers dict before saving
         self._snapshot_current_provider()
         d = asdict(self)
         d.pop("_config_dir", None)
+        d["schema_version"] = CONFIG_SCHEMA_VERSION
         with open(self.config_path, "w") as f:
             json.dump(d, f, indent=2)
 
@@ -77,6 +100,8 @@ class RikuganConfig:
             return
         with open(self.config_path, "r") as f:
             data = json.load(f)
+        # Schema version check (for future migrations)
+        _stored_version = data.pop("schema_version", 0)
         if "provider" in data:
             for k, v in data["provider"].items():
                 if hasattr(self.provider, k):

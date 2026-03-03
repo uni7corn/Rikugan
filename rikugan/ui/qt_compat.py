@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Signal, Qt, QObject, QTimer  # noqa: F401
 from PySide6.QtWidgets import (  # noqa: F401
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QScrollArea, QFrame,
+    QPlainTextEdit, QScrollArea, QFrame, QSplitter,
     QDialog, QDialogButtonBox, QComboBox, QLineEdit, QSpinBox,
     QDoubleSpinBox, QCheckBox, QGroupBox, QFormLayout,
     QToolButton, QSizePolicy, QTabWidget, QTabBar,

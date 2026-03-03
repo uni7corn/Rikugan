@@ -8,17 +8,19 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from .qt_compat import (
-    QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QTimer,
+    QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QPushButton, QTimer,
     QTabWidget, QTabBar, QToolButton, Signal, QFileDialog, QMenu, QMessageBox, Qt,
 )
 from .styles import DARK_THEME
 from .chat_view import ChatView
 from .input_area import InputArea
 from .context_bar import ContextBar
+from .mutation_log_view import MutationLogPanel
 from .settings_dialog import SettingsDialog, _resolve_auth_cached
 from ..core.config import RikuganConfig
 from ..core.logging import log_error, log_info, log_debug
 from ..agent.turn import TurnEvent, TurnEventType
+from ..agent.mutation import MutationRecord
 
 
 class _AddButtonTabBar(QTabBar):
@@ -26,6 +28,7 @@ class _AddButtonTabBar(QTabBar):
 
     add_tab_requested = Signal()
     export_tab_requested = Signal(int)
+    fork_tab_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,9 +51,12 @@ class _AddButtonTabBar(QTabBar):
             return
         menu = QMenu(self)
         export_action = menu.addAction("Export Chat")
+        fork_action = menu.addAction("Fork Session")
         action = menu.exec_(self.mapToGlobal(pos))
         if action == export_action:
             self.export_tab_requested.emit(index)
+        elif action == fork_action:
+            self.fork_tab_requested.emit(index)
 
     def tabInserted(self, index):
         super().tabInserted(index)
@@ -102,6 +108,7 @@ class RikuganPanelCore(QWidget):
         # Tab-id stored as widget property for lookup
         self._tab_id_for_index: Dict[int, str] = {}
         self._context_bar: Optional[ContextBar] = None
+        self._mutation_panel: Optional[MutationLogPanel] = None
 
         def _warm_oauth() -> None:
             try:
@@ -130,6 +137,7 @@ class RikuganPanelCore(QWidget):
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
         self._tab_bar.add_tab_requested.connect(self._on_new_tab)
         self._tab_bar.export_tab_requested.connect(self._on_export_tab)
+        self._tab_bar.fork_tab_requested.connect(self._on_fork_tab)
 
         # Style the tab bar
         self._tab_widget.setStyleSheet(
@@ -149,7 +157,22 @@ class RikuganPanelCore(QWidget):
         # Hide tab bar when there's only one tab
         self._tab_bar.setVisible(False)
 
-        layout.addWidget(self._tab_widget, 1)
+        # --- Horizontal splitter: chat | mutation log ---
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.setHandleWidth(1)
+        self._main_splitter.setStyleSheet(
+            "QSplitter::handle { background: #3c3c3c; }"
+        )
+        self._main_splitter.addWidget(self._tab_widget)
+
+        self._mutation_panel = MutationLogPanel()
+        self._mutation_panel.undo_requested.connect(self._on_undo_requested)
+        self._mutation_panel.setVisible(False)
+        self._main_splitter.addWidget(self._mutation_panel)
+        self._main_splitter.setStretchFactor(0, 3)
+        self._main_splitter.setStretchFactor(1, 1)
+
+        layout.addWidget(self._main_splitter, 1)
 
         # Create the initial tab
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
@@ -203,6 +226,14 @@ class RikuganPanelCore(QWidget):
         self._settings_btn.setStyleSheet(small_btn_style)
         self._settings_btn.clicked.connect(self._on_settings)
         btn_layout.addWidget(self._settings_btn)
+
+        self._mutations_btn = QPushButton("Mutations")
+        self._mutations_btn.setFixedWidth(64)
+        self._mutations_btn.setStyleSheet(small_btn_style)
+        self._mutations_btn.setCheckable(True)
+        self._mutations_btn.clicked.connect(self._on_toggle_mutation_log)
+        self._mutations_btn.setVisible(False)  # shown when first mutation is recorded
+        btn_layout.addWidget(self._mutations_btn)
 
         btn_layout.addStretch()
         input_layout.addLayout(btn_layout)
@@ -264,6 +295,23 @@ class RikuganPanelCore(QWidget):
         tab_id = self._ctrl.create_tab()
         self._create_tab(tab_id, "New Chat")
         self._ctrl.switch_tab(tab_id)
+
+    def _on_fork_tab(self, index: int) -> None:
+        """Fork (duplicate) a session into a new tab."""
+        source_tab_id = self._tab_id_at_index(index)
+        if source_tab_id is None:
+            return
+        new_tab_id = self._ctrl.fork_session(source_tab_id)
+        if new_tab_id is None:
+            return
+        label = self._ctrl.tab_label(new_tab_id)
+        chat_view = self._create_tab(new_tab_id, f"{label} (fork)")
+        # Restore messages into the forked chat view
+        source_session = self._ctrl._sessions.get(new_tab_id)
+        if source_session and source_session.messages:
+            chat_view.restore_from_messages(source_session.messages)
+        self._ctrl.switch_tab(new_tab_id)
+        log_info(f"Forked tab {source_tab_id} → {new_tab_id}")
 
     def _on_close_tab(self, index: int) -> None:
         """Close a tab. Prevents closing the last tab."""
@@ -637,9 +685,11 @@ class RikuganPanelCore(QWidget):
         chat_view.handle_event(event)
         if event.usage:
             self._update_token_display()
-        if event.type == TurnEventType.USER_QUESTION:
+        if event.type in (TurnEventType.USER_QUESTION, TurnEventType.SAVE_APPROVAL_REQUEST):
             self._pending_answer = True
             self._set_running(False)
+        if event.type == TurnEventType.MUTATION_RECORDED:
+            self._on_mutation_recorded(event)
 
     def _on_tool_approval(self, tool_call_id: str, decision: str) -> None:
         """Forward tool approval to the agent loop."""
@@ -703,6 +753,40 @@ class RikuganPanelCore(QWidget):
                 if chat_view:
                     chat_view.restore_from_messages(session.messages)
                 self._update_token_display()
+
+    # --- Mutation log integration ---
+
+    def _on_mutation_recorded(self, event: TurnEvent) -> None:
+        """Handle a MUTATION_RECORDED event by adding it to the mutation log panel."""
+        if self._mutation_panel is None:
+            return
+        meta = event.metadata
+        record = MutationRecord(
+            tool_name=event.tool_name,
+            arguments={},
+            reverse_tool=meta.get("reverse_tool", ""),
+            reverse_arguments=meta.get("reverse_args", {}),
+            description=event.text,
+            reversible=meta.get("reversible", False),
+        )
+        self._mutation_panel.add_mutation(record)
+        # Show the mutations button once the first mutation is recorded
+        self._mutations_btn.setVisible(True)
+
+    def _on_toggle_mutation_log(self) -> None:
+        """Toggle visibility of the mutation log panel."""
+        if self._mutation_panel is None:
+            return
+        visible = not self._mutation_panel.isVisible()
+        self._mutation_panel.setVisible(visible)
+        self._mutations_btn.setChecked(visible)
+
+    def _on_undo_requested(self, count: int) -> None:
+        """Handle undo request from the mutation log panel."""
+        if self._is_shutdown:
+            return
+        # Submit /undo command through the normal agent path
+        self._start_agent(f"/undo {count}")
 
     def _set_running(self, running: bool) -> None:
         self._input_area.set_enabled(not running)

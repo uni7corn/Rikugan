@@ -2,11 +2,14 @@
 
 The file log at <config_dir>/rikugan/rikugan_debug.log is flushed after every
 write so the last line survives even if the host crashes hard.
+
+Structured JSON log is written to rikugan_structured.jsonl for machine parsing.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import sys
@@ -41,6 +44,21 @@ class _FlushFileHandler(logging.FileHandler):
             os.fsync(self.stream.fileno())
         except OSError:
             pass  # fsync can fail on pipes/redirected streams — non-fatal for logging
+
+
+class _JSONFormatter(logging.Formatter):
+    """Formats log records as single-line JSON for machine parsing."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "ts": record.created,
+            "level": record.levelname,
+            "thread": record.threadName,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1]:
+            entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(entry, default=str)
 
 
 class IDAHandler(logging.Handler):
@@ -88,6 +106,16 @@ def get_logger() -> logging.Logger:
         _logger.debug(f"Thread: {threading.current_thread().name}")
     except Exception as e:
         _logger.warning(f"Could not open debug log file: {e}")
+
+    # Structured JSON log (JSONL format for machine parsing / analytics)
+    try:
+        json_path = os.path.join(os.path.dirname(_log_file_path()), "rikugan_structured.jsonl")
+        json_handler = _FlushFileHandler(json_path, mode="a", encoding="utf-8")
+        json_handler.setLevel(logging.INFO)
+        json_handler.setFormatter(_JSONFormatter())
+        _logger.addHandler(json_handler)
+    except Exception:
+        pass  # Non-critical — structured logging is optional
 
     return _logger
 

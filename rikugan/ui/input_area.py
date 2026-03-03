@@ -93,7 +93,7 @@ class InputArea(QPlainTextEdit):
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("input_area")
-        self.setPlaceholderText("Ask about this binary... (/ for skills, /plan for step-by-step)")
+        self.setPlaceholderText("Ask about this binary... (/ for skills, /modify to patch)")
         self.setMaximumHeight(100)
         self.setMinimumHeight(40)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -114,10 +114,10 @@ class InputArea(QPlainTextEdit):
     def set_skill_slugs(self, slugs: List[str]) -> None:
         """Set the list of available skill slugs for autocomplete.
 
-        Automatically includes /plan as a built-in command.
+        Automatically includes /plan, /modify, and /explore as built-in commands.
         """
         combined = set(slugs)
-        combined.add("plan")
+        combined.update(("plan", "modify", "explore"))
         self._skill_slugs = sorted(combined)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
@@ -161,7 +161,7 @@ class InputArea(QPlainTextEdit):
         self._enabled = enabled
         self.setReadOnly(not enabled)
         if enabled:
-            self.setPlaceholderText("Ask about this binary... (/ for skills, /plan for step-by-step)")
+            self.setPlaceholderText("Ask about this binary... (/ for skills, /modify to patch)")
         else:
             self.setPlaceholderText("Rikugan is thinking...")
 

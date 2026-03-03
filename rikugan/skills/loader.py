@@ -131,6 +131,7 @@ class SkillDefinition:
     directory: str
     allowed_tools: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    mode: str = ""  # e.g. "exploration" to trigger exploration mode
     author: str = ""
     version: str = ""
     frontmatter: Dict[str, Any] = field(default_factory=dict)
@@ -235,12 +236,22 @@ def discover_skills(skills_dir: str) -> List[SkillDefinition]:
                 directory=skill_dir,
                 allowed_tools=fm.get("allowed_tools", []),
                 tags=fm.get("tags", []),
+                mode=fm.get("mode", ""),
                 author=author,
                 version=version,
                 frontmatter=fm,
                 _body=None,  # lazy
                 _md_path=md_path,
             )
+
+            # Validate the body is readable at discovery time so errors
+            # surface early instead of crashing when the skill is invoked.
+            try:
+                _ = skill.body
+            except Exception as e:
+                log_error(f"Skill /{entry} body unreadable, skipping: {e}")
+                continue
+
             skills.append(skill)
             log_debug(f"Discovered skill: /{entry} — {skill.description or '(no description)'}")
 

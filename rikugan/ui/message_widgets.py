@@ -94,6 +94,10 @@ for _t in (
 ):
     _TOOL_COLORS[_t] = "#c586c0"  # magenta/purple
 
+# Exploration -> gold/amber
+for _t in ("exploration_report", "phase_transition"):
+    _TOOL_COLORS[_t] = "#d7ba7d"
+
 # Scripting -> green
 for _t in ("execute_python",):
     _TOOL_COLORS[_t] = "#6a9955"
@@ -216,6 +220,20 @@ def _format_tool_summary(tool_name: str, args_text: str) -> str:
         target = _get("address", "name_or_address")
         if target:
             summary = target
+
+    elif short_name == "exploration_report":
+        cat = _get("category")
+        sm = _get("summary")
+        if sm and len(sm) > 50:
+            sm = sm[:47] + "..."
+        summary = f"[{cat}] {sm}" if cat and sm else sm or cat or ""
+
+    elif short_name == "phase_transition":
+        phase = _get("to_phase")
+        reason = _get("reason")
+        if reason and len(reason) > 40:
+            reason = reason[:37] + "..."
+        summary = f"→ {phase}" + (f": {reason}" if reason else "")
 
     else:
         # Generic: try common parameter names
@@ -1110,6 +1128,94 @@ class ToolApprovalWidget(QFrame):
             "border-radius: 4px; padding: 4px 16px; font-size: 11px; }"
         )
         self.approved.emit(self._tool_call_id, "deny")
+
+
+class ExplorationPhaseWidget(QFrame):
+    """Displays an exploration phase transition."""
+
+    _PHASE_ICONS = {
+        "explore": "\u25b6",   # play
+        "plan": "\u270e",      # pencil
+        "execute": "\u2699",   # gear
+        "save": "\u2714",      # checkmark
+    }
+
+    def __init__(self, from_phase: str, to_phase: str, reason: str = "",
+                 parent: QWidget = None):
+        super().__init__(parent)
+        self.setObjectName("message_tool")
+        self.setStyleSheet(
+            "QFrame#message_tool { border-color: #d7ba7d; background: #2d2a1f; }"
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
+        icon = self._PHASE_ICONS.get(to_phase, "\u2192")
+        phase_label = QLabel(f"{icon}  Phase: {to_phase.upper()}")
+        phase_label.setStyleSheet(
+            "color: #d7ba7d; font-weight: bold; font-size: 11px;"
+        )
+        layout.addWidget(phase_label)
+
+        if reason:
+            reason_label = QLabel(reason)
+            reason_label.setWordWrap(True)
+            reason_label.setStyleSheet("color: #b0a070; font-size: 11px;")
+            layout.addWidget(reason_label, 1)
+
+
+class ExplorationFindingWidget(QFrame):
+    """Displays a single exploration finding."""
+
+    _CATEGORY_COLORS = {
+        "function_purpose": "#4ec9b0",
+        "hypothesis": "#d7ba7d",
+        "constant": "#b5cea8",
+        "data_structure": "#c586c0",
+        "string_ref": "#ce9178",
+        "import_usage": "#569cd6",
+        "patch_result": "#6a9955",
+        "general": "#808080",
+    }
+
+    def __init__(self, category: str, summary: str, address: str = None,
+                 relevance: str = "medium", parent: QWidget = None):
+        super().__init__(parent)
+        self.setObjectName("message_tool")
+        color = self._CATEGORY_COLORS.get(category, "#808080")
+        self.setStyleSheet(
+            f"QFrame#message_tool {{ border-color: {color}; }}"
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        cat_label = QLabel(f"[{category}]")
+        cat_label.setStyleSheet(
+            f"color: {color}; font-weight: bold; font-size: 10px;"
+        )
+        layout.addWidget(cat_label)
+
+        if address:
+            addr_label = QLabel(address)
+            addr_label.setStyleSheet(
+                "color: #808080; font-family: monospace; font-size: 10px;"
+            )
+            layout.addWidget(addr_label)
+
+        summary_label = QLabel(summary)
+        summary_label.setWordWrap(True)
+        summary_label.setStyleSheet("color: #d4d4d4; font-size: 11px;")
+        layout.addWidget(summary_label, 1)
+
+        if relevance == "high":
+            rel_label = QLabel("\u2605")
+            rel_label.setStyleSheet("color: #d7ba7d; font-size: 12px;")
+            rel_label.setToolTip("High relevance")
+            layout.addWidget(rel_label)
 
 
 class ErrorMessageWidget(QFrame):
