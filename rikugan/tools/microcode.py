@@ -43,6 +43,24 @@ except ImportError as e:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+if _HAS_HEXRAYS:
+    class _MBACapture(ida_hexrays.Hexrays_Hooks):  # type: ignore[misc]
+        """Hexrays hook that captures the MBA at a target maturity level."""
+
+        def __init__(self, target_maturity: int) -> None:
+            super().__init__()
+            self.target_maturity = target_maturity
+            self.captured = None
+
+        def maturity(self, cfunc, new_maturity):  # noqa: N802 — IDA API name
+            try:
+                cur = cfunc.mba.maturity
+                if self.captured is None and cur == self.target_maturity:
+                    self.captured = format_mba(cfunc.mba)
+            except (AttributeError, RuntimeError) as e:
+                log_debug(f"_MBACapture hook: mba not yet available: {e}")
+            return 0
+
 def _get_func_or_raise(ea: int):
     pfn = ida_funcs.get_func(ea)
     if pfn is None:
@@ -83,19 +101,7 @@ def _gen_microcode_at(ea: int, maturity: int):
         log_debug(f"gen_microcode unavailable or failed for {pfn.start_ea:#x}: {e}; using hook capture")
 
     # --- Fallback: capture via Hexrays_Hooks during decompile() ---
-    captured = [None]
-
-    class _Capture(ida_hexrays.Hexrays_Hooks):
-        def maturity(self, cfunc, new_maturity):
-            try:
-                cur = cfunc.mba.maturity
-                if captured[0] is None and cur == maturity:
-                    captured[0] = format_mba(cfunc.mba)
-            except (AttributeError, RuntimeError) as e:
-                log_debug(f"_capture_at_maturity hook: mba not yet available: {e}")
-            return 0
-
-    hook = _Capture()
+    hook = _MBACapture(maturity)
     hook.hook()
     try:
         ida_hexrays.decompile(pfn.start_ea)
@@ -104,8 +110,8 @@ def _gen_microcode_at(ea: int, maturity: int):
     finally:
         hook.unhook()
 
-    if captured[0] is not None:
-        return captured[0]
+    if hook.captured is not None:
+        return hook.captured
 
     raise ToolError(
         f"Could not generate microcode at {maturity_label(maturity)} for {pfn.start_ea:#x}",
