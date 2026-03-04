@@ -105,8 +105,6 @@ class RikuganPanelCore(QWidget):
 
         # Tab-to-ChatView mapping
         self._chat_views: Dict[str, ChatView] = {}
-        # Tab-id stored as widget property for lookup
-        self._tab_id_for_index: Dict[int, str] = {}
         self._context_bar: Optional[ContextBar] = None
         self._mutation_panel: Optional[MutationLogPanel] = None
         self._skills_refresh_timer: Optional[QTimer] = None
@@ -303,6 +301,7 @@ class RikuganPanelCore(QWidget):
     def _create_tab(self, tab_id: str, label: str) -> ChatView:
         """Create a new ChatView and add it as a tab."""
         chat_view = ChatView()
+        chat_view.setProperty("tab_id", tab_id)  # O(1) lookup in _tab_id_at_index
         chat_view.tool_approval_submitted.connect(self._on_tool_approval)
         chat_view.user_answer_submitted.connect(self._on_user_answer_submitted)
         self._chat_views[tab_id] = chat_view
@@ -512,10 +511,14 @@ class RikuganPanelCore(QWidget):
         self._update_token_display()
 
     def _tab_id_at_index(self, index: int) -> Optional[str]:
-        """Find the tab_id for a given tab index by matching the widget."""
+        """Find the tab_id for a given tab index via the stored property (O(1))."""
         widget = self._tab_widget.widget(index)
         if widget is None:
             return None
+        tid = widget.property("tab_id")
+        if tid and tid in self._chat_views:
+            return tid
+        # Fallback for tabs created before property was set
         for tid, cv in self._chat_views.items():
             if cv is widget:
                 return tid

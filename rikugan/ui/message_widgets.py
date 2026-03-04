@@ -529,6 +529,43 @@ class AssistantMessageWidget(QFrame):
 # Compact tool call widget
 # ---------------------------------------------------------------------------
 
+class _SharedSpinnerTimer:
+    """Single QTimer shared across all ToolCallWidget instances.
+
+    Instead of N timers (one per widget), one 100ms timer ticks all
+    active spinners.  Starts automatically when the first widget
+    registers and stops when the last one unregisters.
+    """
+
+    _instance: "_SharedSpinnerTimer | None" = None
+
+    def __init__(self) -> None:
+        self._timer = QTimer()
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._tick)
+        self._widgets: set["ToolCallWidget"] = set()
+
+    @classmethod
+    def get(cls) -> "_SharedSpinnerTimer":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def register(self, widget: "ToolCallWidget") -> None:
+        self._widgets.add(widget)
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def unregister(self, widget: "ToolCallWidget") -> None:
+        self._widgets.discard(widget)
+        if not self._widgets and self._timer.isActive():
+            self._timer.stop()
+
+    def _tick(self) -> None:
+        for w in list(self._widgets):
+            w._spin_tick()
+
+
 class ToolCallWidget(QFrame):
     """Compact tool call display.
 
@@ -589,10 +626,8 @@ class ToolCallWidget(QFrame):
 
         layout.addLayout(header_layout)
 
-        # Animated spinner while tool is executing
-        self._spin_timer = QTimer(self)
-        self._spin_timer.timeout.connect(self._spin_tick)
-        self._spin_timer.start(100)
+        # Register with the shared spinner timer (one timer for all widgets)
+        _SharedSpinnerTimer.get().register(self)
 
         # Preview: first few lines of args, shown by default
         self._preview_label = QLabel()
@@ -638,9 +673,8 @@ class ToolCallWidget(QFrame):
         self._status_label.setText(self._SPINNER_FRAMES[self._spin_idx])
 
     def _stop_spinner(self) -> None:
-        """Stop the spinner timer if running."""
-        if self._spin_timer.isActive():
-            self._spin_timer.stop()
+        """Unregister from the shared spinner timer."""
+        _SharedSpinnerTimer.get().unregister(self)
 
     def _toggle(self) -> None:
         self._expanded = not self._expanded

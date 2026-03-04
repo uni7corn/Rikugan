@@ -408,7 +408,8 @@ class ChatView(QScrollArea):
         self._scroll_timer.start()
 
     def _do_scroll(self) -> None:
-        self._container.adjustSize()
+        # updateGeometry is cheaper than adjustSize (avoids full re-layout)
+        self._container.updateGeometry()
         sb = self.verticalScrollBar()
         sb.setValue(sb.maximum())
 
