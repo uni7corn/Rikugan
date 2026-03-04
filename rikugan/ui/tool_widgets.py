@@ -346,10 +346,16 @@ class ToolCallWidget(QFrame):
         layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(2)
 
+        layout.addLayout(self._build_header(tool_name))
+        _SharedSpinnerTimer.get().register(self)
+        layout.addWidget(self._build_preview())
+        layout.addWidget(self._build_detail_section())
+
+    def _build_header(self, tool_name: str) -> QHBoxLayout:
+        """Build the compact header row: toggle ● name  summary  status."""
         display_name = _strip_mcp_prefix(tool_name)
         color = _tool_color(tool_name)
 
-        # Compact header line: ● tool_name  summary
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(0)
@@ -367,9 +373,7 @@ class ToolCallWidget(QFrame):
         header_layout.addWidget(self._bullet)
 
         self._name_label = QLabel(display_name)
-        self._name_label.setStyleSheet(
-            f"color: {color}; font-weight: bold; font-size: 11px;"
-        )
+        self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
         header_layout.addWidget(self._name_label)
 
         self._summary_label = QLabel("")
@@ -380,23 +384,21 @@ class ToolCallWidget(QFrame):
         self._status_label.setStyleSheet("color: #dcdcaa; font-size: 10px;")
         header_layout.addWidget(self._status_label)
 
-        layout.addLayout(header_layout)
+        return header_layout
 
-        # Register with the shared spinner timer (one timer for all widgets)
-        _SharedSpinnerTimer.get().register(self)
-
-        # Preview: first few lines of args, shown by default
+    def _build_preview(self) -> QLabel:
+        """Build the preview label (truncated args, shown when collapsed)."""
         self._preview_label = QLabel()
         self._preview_label.setObjectName("tool_content")
         self._preview_label.setWordWrap(True)
         self._preview_label.setStyleSheet(
-            "color: #6a6a7a; font-family: monospace; font-size: 10px; "
-            "margin-left: 28px;"
+            "color: #6a6a7a; font-family: monospace; font-size: 10px; margin-left: 28px;"
         )
         self._preview_label.setVisible(False)
-        layout.addWidget(self._preview_label)
+        return self._preview_label
 
-        # Expandable detail area (args + result)
+    def _build_detail_section(self) -> QWidget:
+        """Build the expandable detail area (args + result)."""
         self._detail_widget = QWidget()
         self._detail_layout = QVBoxLayout(self._detail_widget)
         self._detail_layout.setContentsMargins(28, 2, 0, 2)
@@ -421,7 +423,7 @@ class ToolCallWidget(QFrame):
         self._detail_layout.addWidget(self._result_label)
 
         self._detail_widget.setVisible(False)
-        layout.addWidget(self._detail_widget)
+        return self._detail_widget
 
     def _spin_tick(self) -> None:
         """Advance the spinner animation frame."""
@@ -515,10 +517,15 @@ class ToolBatchWidget(QFrame):
         layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(2)
 
+        layout.addLayout(self._build_header(tool_name))
+        layout.addWidget(self._build_preview())
+        layout.addWidget(self._build_detail_section())
+
+    def _build_header(self, tool_name: str) -> QHBoxLayout:
+        """Build the compact header row: toggle ● name  count  status."""
         display_name = _strip_mcp_prefix(tool_name)
         color = _tool_color(tool_name)
 
-        # Header: ● tool_name  (N calls)
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(0)
@@ -536,9 +543,7 @@ class ToolBatchWidget(QFrame):
         header_layout.addWidget(self._bullet)
 
         self._name_label = QLabel(display_name)
-        self._name_label.setStyleSheet(
-            f"color: {color}; font-weight: bold; font-size: 11px;"
-        )
+        self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
         header_layout.addWidget(self._name_label)
 
         self._count_label = QLabel("")
@@ -549,26 +554,27 @@ class ToolBatchWidget(QFrame):
         self._status_label.setStyleSheet("color: #dcdcaa; font-size: 10px;")
         header_layout.addWidget(self._status_label)
 
-        layout.addLayout(header_layout)
+        return header_layout
 
-        # Preview of first call's args
+    def _build_preview(self) -> QLabel:
+        """Build the preview label for the first call's args."""
         self._preview_label = QLabel()
         self._preview_label.setObjectName("tool_content")
         self._preview_label.setWordWrap(True)
         self._preview_label.setStyleSheet(
-            "color: #6a6a7a; font-family: monospace; font-size: 10px; "
-            "margin-left: 28px;"
+            "color: #6a6a7a; font-family: monospace; font-size: 10px; margin-left: 28px;"
         )
         self._preview_label.setVisible(False)
-        layout.addWidget(self._preview_label)
+        return self._preview_label
 
-        # Detail area for all calls
+    def _build_detail_section(self) -> QWidget:
+        """Build the expandable detail area for all calls."""
         self._detail_widget = QWidget()
         self._detail_layout = QVBoxLayout(self._detail_widget)
         self._detail_layout.setContentsMargins(28, 2, 0, 2)
         self._detail_layout.setSpacing(4)
         self._detail_widget.setVisible(False)
-        layout.addWidget(self._detail_widget)
+        return self._detail_widget
 
     def add_call(self, tool_call_id: str, args_text: str = "") -> None:
         """Add another call to this batch."""
@@ -827,52 +833,60 @@ class ToolApprovalWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
 
-        # Header
         header = QLabel("Approve execute_python?")
         header.setStyleSheet("color: #dcdcaa; font-weight: bold; font-size: 11px;")
         layout.addWidget(header)
 
-        # Extract actual code from the JSON args
-        code = ""
-        try:
-            args = json.loads(args_text) if args_text.strip() else {}
-            code = args.get("code", args.get("script", ""))
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            code = args_text  # fallback to raw text
+        code = self._extract_code(args_text)
+        code_lines = code.strip().splitlines() if code.strip() else []
 
-        # Line count info
-        lines = code.strip().splitlines() if code.strip() else []
-        info = QLabel(f"Python code — {len(lines)} line{'s' if len(lines) != 1 else ''}")
+        info = QLabel(f"Python code — {len(code_lines)} line{'s' if len(code_lines) != 1 else ''}")
         info.setStyleSheet("color: #808080; font-size: 10px;")
         layout.addWidget(info)
 
-        # Scrollable, copyable, syntax-highlighted code editor (read-only)
-        if code.strip():
-            self._code_edit = QPlainTextEdit()
-            self._code_edit.setReadOnly(True)
-            self._code_edit.setPlainText(code)
-            self._code_edit.setStyleSheet(
-                "QPlainTextEdit { "
-                "  color: #d4d4d4; background: #1e1e2e; "
-                "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
-                "  font-size: 11px; border: 1px solid #3c3c3c; border-radius: 4px; "
-                "  padding: 4px; "
-                "}"
-                "QScrollBar:vertical { width: 8px; background: #1e1e2e; }"
-                "QScrollBar::handle:vertical { background: #3c3c3c; border-radius: 4px; }"
-                "QScrollBar:horizontal { height: 8px; background: #1e1e2e; }"
-                "QScrollBar::handle:horizontal { background: #3c3c3c; border-radius: 4px; }"
-            )
-            self._code_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-            # Size: show up to 15 lines, then scroll
-            visible_lines = min(len(lines), 15)
-            line_height = self._code_edit.fontMetrics().lineSpacing()
-            self._code_edit.setFixedHeight(line_height * visible_lines + 16)
-            # Attach syntax highlighter
-            self._highlighter = _PythonHighlighter(self._code_edit.document())
-            layout.addWidget(self._code_edit)
+        editor = self._build_code_editor(code, code_lines)
+        if editor is not None:
+            layout.addWidget(editor)
 
-        # Buttons
+        layout.addLayout(self._build_approval_buttons())
+
+    @staticmethod
+    def _extract_code(args_text: str) -> str:
+        """Extract the code/script value from JSON args, falling back to raw text."""
+        try:
+            args = json.loads(args_text) if args_text.strip() else {}
+            return args.get("code", args.get("script", ""))
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return args_text
+
+    def _build_code_editor(self, code: str, lines: list) -> Optional[QPlainTextEdit]:
+        """Build a read-only syntax-highlighted code editor, or None if no code."""
+        if not code.strip():
+            return None
+        self._code_edit = QPlainTextEdit()
+        self._code_edit.setReadOnly(True)
+        self._code_edit.setPlainText(code)
+        self._code_edit.setStyleSheet(
+            "QPlainTextEdit { "
+            "  color: #d4d4d4; background: #1e1e2e; "
+            "  font-family: 'Consolas', 'Monaco', 'Courier New', monospace; "
+            "  font-size: 11px; border: 1px solid #3c3c3c; border-radius: 4px; "
+            "  padding: 4px; "
+            "}"
+            "QScrollBar:vertical { width: 8px; background: #1e1e2e; }"
+            "QScrollBar::handle:vertical { background: #3c3c3c; border-radius: 4px; }"
+            "QScrollBar:horizontal { height: 8px; background: #1e1e2e; }"
+            "QScrollBar::handle:horizontal { background: #3c3c3c; border-radius: 4px; }"
+        )
+        self._code_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        visible_lines = min(len(lines), 15)
+        line_height = self._code_edit.fontMetrics().lineSpacing()
+        self._code_edit.setFixedHeight(line_height * visible_lines + 16)
+        self._highlighter = _PythonHighlighter(self._code_edit.document())
+        return self._code_edit
+
+    def _build_approval_buttons(self) -> QHBoxLayout:
+        """Build the Allow / Always Allow / Deny button row."""
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
@@ -907,7 +921,7 @@ class ToolApprovalWidget(QFrame):
         btn_layout.addWidget(self._deny_btn)
 
         btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        return btn_layout
 
     def _disable_buttons(self):
         self._allow_btn.setEnabled(False)

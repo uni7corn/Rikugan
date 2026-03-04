@@ -27,6 +27,75 @@ from ..agent.mutation import MutationRecord
 from ..core.types import Role
 
 _TOOL_RESULT_TRUNCATE_CHARS = 2000
+_SMALL_BTN_STYLE = (
+    "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+    "border-radius: 6px; padding: 4px; font-size: 11px; }"
+    "QPushButton:hover { background: #3c3c3c; }"
+)
+
+_TOOL_LANG_MAP = {
+    "execute_python": "python",
+    "decompile_function": "c",
+    "get_il": "c",
+    "declare_c_type": "c",
+    "define_types": "c",
+    "set_function_prototype": "c",
+    "fetch_disassembly": "x86asm",
+}
+
+
+def _export_detect_lang(text: str, tool_name: str = "", arg_key: str = "") -> str:
+    """Detect markdown language hint from content heuristics and tool/arg context."""
+    if arg_key in ("code", "python"):
+        return "python"
+    if arg_key in ("c_code", "c_declaration", "prototype"):
+        return "c"
+    if tool_name in _TOOL_LANG_MAP:
+        return _TOOL_LANG_MAP[tool_name]
+
+    sample = text[:_TOOL_RESULT_TRUNCATE_CHARS]
+    if re.search(r"^[0-9a-fA-F]{8,16}\s+([0-9a-fA-F]{2}\s+){4,}", sample, re.M):
+        return "text"
+
+    asm_pat = r"(?:mov|lea|push|pop|call|ret|jmp|je|jne|jz|jnz|cmp|test|xor|add|sub|nop|int)\s"
+    if re.search(asm_pat, sample, re.I) and re.search(r"0x[0-9a-fA-F]+", sample):
+        return "x86asm"
+
+    c_indicators = 0
+    if re.search(r"\b(void|int|char|uint\d+_t|int\d+_t|struct|enum|typedef)\b", sample):
+        c_indicators += 1
+    if re.search(r"[{};]", sample):
+        c_indicators += 1
+    if re.search(r"\b(if|while|for|return|switch)\s*\(", sample):
+        c_indicators += 1
+    if c_indicators >= 2:
+        return "c"
+
+    if re.search(r"^(def |class |import |from .+ import |print\()", sample, re.M):
+        return "python"
+
+    return ""
+
+
+def _export_format_tool_args(tc) -> str:
+    """Format tool call arguments as markdown with per-argument code blocks."""
+    parts = []
+    for k, v in tc.arguments.items():
+        if isinstance(v, str) and ("\n" in v or len(v) > 80):
+            lang = _export_detect_lang(v, tc.name, k)
+            parts.append(f"  - `{k}`:\n\n```{lang}\n{v}\n```\n")
+        else:
+            parts.append(f"  - `{k}`: `{v!r}`")
+    return "\n".join(parts)
+
+
+def _export_format_tool_result(tr) -> str:
+    """Format tool result content as a markdown code block."""
+    content = tr.content
+    if len(content) > _TOOL_RESULT_TRUNCATE_CHARS:
+        content = content[:_TOOL_RESULT_TRUNCATE_CHARS] + "\n... (truncated)"
+    lang = _export_detect_lang(content, tr.name)
+    return f"```{lang}\n{content}\n```"
 
 
 class _AddButtonTabBar(QTabBar):
@@ -165,124 +234,10 @@ class RikuganPanelCore(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # --- Tab widget with custom tab bar ---
-        self._tab_widget = QTabWidget()
-        self._tab_bar = _AddButtonTabBar()
-        self._tab_widget.setTabBar(self._tab_bar)
-        self._tab_widget.setDocumentMode(True)
-        self._tab_widget.setTabsClosable(True)
-        self._tab_widget.tabCloseRequested.connect(self._on_close_tab)
-        self._tab_widget.currentChanged.connect(self._on_tab_changed)
-        self._tab_bar.add_tab_requested.connect(self._on_new_tab)
-        self._tab_bar.export_tab_requested.connect(self._on_export_tab)
-        self._tab_bar.fork_tab_requested.connect(self._on_fork_tab)
-
-        # Style the tab bar
-        self._tab_widget.setStyleSheet(
-            "QTabWidget::pane { border: none; }"
-            "QTabBar { background: #1e1e1e; border: none; }"
-            "QTabBar::tab { background: #252526; color: #cccccc; padding: 2px 8px; "
-            "border: none; border-right: 1px solid #3c3c3c; "
-            "font-size: 11px; max-width: 140px; }"
-            "QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; }"
-            "QTabBar::tab:hover { background: #2d2d2d; }"
-            "QTabBar::close-button { image: none; border: none; padding: 1px; }"
-            "QTabBar::close-button:hover { background: #c42b1c; border-radius: 2px; }"
-        )
-
-        self._tab_bar.setExpanding(False)
-
-        # Hide tab bar when there's only one tab
-        self._tab_bar.setVisible(False)
-
-        # --- Horizontal splitter: chat | mutation log ---
-        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._main_splitter.setHandleWidth(1)
-        self._main_splitter.setStyleSheet(
-            "QSplitter::handle { background: #3c3c3c; }"
-        )
-        self._main_splitter.addWidget(self._tab_widget)
-
-        self._mutation_panel = MutationLogPanel()
-        self._mutation_panel.undo_requested.connect(self._on_undo_requested)
-        self._mutation_panel.setVisible(False)
-        self._main_splitter.addWidget(self._mutation_panel)
-        self._main_splitter.setStretchFactor(0, 3)
-        self._main_splitter.setStretchFactor(1, 1)
-
-        layout.addWidget(self._main_splitter, 1)
-
-        # Create the initial tab
+        self._build_tab_widget()
+        self._build_main_splitter(layout)
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
-
-        input_container = QWidget()
-        input_layout = QHBoxLayout(input_container)
-        input_layout.setContentsMargins(8, 4, 8, 4)
-
-        self._input_area = InputArea()
-        self._input_area.set_submit_callback(self._on_submit)
-        self._input_area.set_cancel_callback(self._on_cancel)
-        self._input_area.set_skill_slugs(self._ctrl.skill_slugs)
-        self._ensure_skills_refresh_timer()
-        input_layout.addWidget(self._input_area, 1)
-
-        btn_layout = QVBoxLayout()
-        btn_layout.setSpacing(4)
-
-        small_btn_style = (
-            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-            "border-radius: 6px; padding: 4px; font-size: 11px; }"
-            "QPushButton:hover { background: #3c3c3c; }"
-        )
-
-        self._send_btn = QPushButton("Send")
-        self._send_btn.setObjectName("send_button")
-        self._send_btn.setFixedWidth(64)
-        self._send_btn.setStyleSheet(small_btn_style)
-        self._send_btn.clicked.connect(self._on_send_clicked)
-        btn_layout.addWidget(self._send_btn)
-
-        self._cancel_btn = QPushButton("Stop")
-        self._cancel_btn.setObjectName("cancel_button")
-        self._cancel_btn.setFixedWidth(64)
-        self._cancel_btn.setStyleSheet(
-            "QPushButton { background: #2d2d2d; color: #c42b1c; border: 1px solid #3c3c3c; "
-            "border-radius: 6px; padding: 4px; font-size: 11px; }"
-            "QPushButton:hover { background: #3c3c3c; }"
-        )
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        btn_layout.addWidget(self._cancel_btn)
-
-        self._new_btn = QPushButton("New")
-        self._new_btn.setFixedWidth(64)
-        self._new_btn.setStyleSheet(small_btn_style)
-        self._new_btn.clicked.connect(self._on_new_tab)
-        btn_layout.addWidget(self._new_btn)
-
-        self._export_btn = QPushButton("Export")
-        self._export_btn.setFixedWidth(64)
-        self._export_btn.setStyleSheet(small_btn_style)
-        self._export_btn.clicked.connect(self._on_export_current)
-        btn_layout.addWidget(self._export_btn)
-
-        self._settings_btn = QPushButton("Settings")
-        self._settings_btn.setFixedWidth(64)
-        self._settings_btn.setStyleSheet(small_btn_style)
-        self._settings_btn.clicked.connect(self._on_settings)
-        btn_layout.addWidget(self._settings_btn)
-
-        self._mutations_btn = QPushButton("Mutations")
-        self._mutations_btn.setFixedWidth(64)
-        self._mutations_btn.setStyleSheet(small_btn_style)
-        self._mutations_btn.setCheckable(True)
-        self._mutations_btn.clicked.connect(self._on_toggle_mutation_log)
-        self._mutations_btn.setVisible(False)  # shown when first mutation is recorded
-        btn_layout.addWidget(self._mutations_btn)
-
-        btn_layout.addStretch()
-        input_layout.addLayout(btn_layout)
-        layout.addWidget(input_container)
+        layout.addWidget(self._build_input_section())
 
         self._context_bar = ContextBar()
         self._context_bar.set_model(self._config.provider.model)
@@ -297,6 +252,114 @@ class RikuganPanelCore(QWidget):
                 self._ui_hooks = None
 
         self._try_restore_session()
+
+    def _build_tab_widget(self) -> None:
+        """Create the tab widget with custom tab bar."""
+        self._tab_widget = QTabWidget()
+        self._tab_bar = _AddButtonTabBar()
+        self._tab_widget.setTabBar(self._tab_bar)
+        self._tab_widget.setDocumentMode(True)
+        self._tab_widget.setTabsClosable(True)
+        self._tab_widget.tabCloseRequested.connect(self._on_close_tab)
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._tab_bar.add_tab_requested.connect(self._on_new_tab)
+        self._tab_bar.export_tab_requested.connect(self._on_export_tab)
+        self._tab_bar.fork_tab_requested.connect(self._on_fork_tab)
+        self._tab_widget.setStyleSheet(
+            "QTabWidget::pane { border: none; }"
+            "QTabBar { background: #1e1e1e; border: none; }"
+            "QTabBar::tab { background: #252526; color: #cccccc; padding: 2px 8px; "
+            "border: none; border-right: 1px solid #3c3c3c; "
+            "font-size: 11px; max-width: 140px; }"
+            "QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; }"
+            "QTabBar::tab:hover { background: #2d2d2d; }"
+            "QTabBar::close-button { image: none; border: none; padding: 1px; }"
+            "QTabBar::close-button:hover { background: #c42b1c; border-radius: 2px; }"
+        )
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setVisible(False)  # hidden until 2+ tabs
+
+    def _build_main_splitter(self, layout: QVBoxLayout) -> None:
+        """Create the horizontal splitter (chat | mutation log) and add to layout."""
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.setHandleWidth(1)
+        self._main_splitter.setStyleSheet("QSplitter::handle { background: #3c3c3c; }")
+        self._main_splitter.addWidget(self._tab_widget)
+
+        self._mutation_panel = MutationLogPanel()
+        self._mutation_panel.undo_requested.connect(self._on_undo_requested)
+        self._mutation_panel.setVisible(False)
+        self._main_splitter.addWidget(self._mutation_panel)
+        self._main_splitter.setStretchFactor(0, 3)
+        self._main_splitter.setStretchFactor(1, 1)
+
+        layout.addWidget(self._main_splitter, 1)
+
+    def _build_input_section(self) -> QWidget:
+        """Build the bottom input area with text field and action buttons."""
+        input_container = QWidget()
+        input_layout = QHBoxLayout(input_container)
+        input_layout.setContentsMargins(8, 4, 8, 4)
+
+        self._input_area = InputArea()
+        self._input_area.set_submit_callback(self._on_submit)
+        self._input_area.set_cancel_callback(self._on_cancel)
+        self._input_area.set_skill_slugs(self._ctrl.skill_slugs)
+        self._ensure_skills_refresh_timer()
+        input_layout.addWidget(self._input_area, 1)
+        input_layout.addLayout(self._build_action_buttons())
+        return input_container
+
+    def _build_action_buttons(self) -> QVBoxLayout:
+        """Build the vertical stack of action buttons (Send, Stop, New, etc.)."""
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(4)
+
+        self._send_btn = QPushButton("Send")
+        self._send_btn.setObjectName("send_button")
+        self._send_btn.setFixedWidth(64)
+        self._send_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._send_btn.clicked.connect(self._on_send_clicked)
+        btn_layout.addWidget(self._send_btn)
+
+        self._cancel_btn = QPushButton("Stop")
+        self._cancel_btn.setObjectName("cancel_button")
+        self._cancel_btn.setFixedWidth(64)
+        self._cancel_btn.setStyleSheet(
+            "QPushButton { background: #2d2d2d; color: #c42b1c; border: 1px solid #3c3c3c; "
+            "border-radius: 6px; padding: 4px; font-size: 11px; }"
+            "QPushButton:hover { background: #3c3c3c; }"
+        )
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        btn_layout.addWidget(self._cancel_btn)
+        self._new_btn = QPushButton("New")
+        self._new_btn.setFixedWidth(64)
+        self._new_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._new_btn.clicked.connect(self._on_new_tab)
+        btn_layout.addWidget(self._new_btn)
+        self._export_btn = QPushButton("Export")
+        self._export_btn.setFixedWidth(64)
+        self._export_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._export_btn.clicked.connect(self._on_export_current)
+        btn_layout.addWidget(self._export_btn)
+
+        self._settings_btn = QPushButton("Settings")
+        self._settings_btn.setFixedWidth(64)
+        self._settings_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._settings_btn.clicked.connect(self._on_settings)
+        btn_layout.addWidget(self._settings_btn)
+
+        self._mutations_btn = QPushButton("Mutations")
+        self._mutations_btn.setFixedWidth(64)
+        self._mutations_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._mutations_btn.setCheckable(True)
+        self._mutations_btn.clicked.connect(self._on_toggle_mutation_log)
+        self._mutations_btn.setVisible(False)  # shown when first mutation is recorded
+        btn_layout.addWidget(self._mutations_btn)
+
+        btn_layout.addStretch()
+        return btn_layout
 
     # --- Tab management ---
 
@@ -400,76 +463,6 @@ class RikuganPanelCore(QWidget):
     @staticmethod
     def _export_session_to_file(session, path: str) -> None:
         """Write session messages to a Markdown file."""
-
-        def _detect_lang(text: str, tool_name: str = "", arg_key: str = "") -> str:
-            """Detect language from content heuristics and tool/arg context."""
-            # Argument key hints
-            if arg_key in ("code", "python"):
-                return "python"
-            if arg_key in ("c_code", "c_declaration", "prototype"):
-                return "c"
-
-            # Tool name hints (checked before content — fast path)
-            _TOOL_LANG = {
-                "execute_python": "python",
-                "decompile_function": "c",
-                "get_il": "c",
-                "declare_c_type": "c",
-                "define_types": "c",
-                "set_function_prototype": "c",
-                "fetch_disassembly": "x86asm",
-            }
-            if tool_name in _TOOL_LANG:
-                return _TOOL_LANG[tool_name]
-
-            # Content-based detection
-            sample = text[:_TOOL_RESULT_TRUNCATE_CHARS]
-
-            # Hexdump pattern: addresses with hex bytes
-            if re.search(r"^[0-9a-fA-F]{8,16}\s+([0-9a-fA-F]{2}\s+){4,}", sample, re.M):
-                return "text"
-
-            # Assembly: mnemonics at line starts or after addresses
-            asm_pat = r"(?:mov|lea|push|pop|call|ret|jmp|je|jne|jz|jnz|cmp|test|xor|add|sub|nop|int)\s"
-            if re.search(asm_pat, sample, re.I) and re.search(r"0x[0-9a-fA-F]+", sample):
-                return "x86asm"
-
-            # C-like: decompiled output with types, braces, semicolons
-            c_indicators = 0
-            if re.search(r"\b(void|int|char|uint\d+_t|int\d+_t|struct|enum|typedef)\b", sample):
-                c_indicators += 1
-            if re.search(r"[{};]", sample):
-                c_indicators += 1
-            if re.search(r"\b(if|while|for|return|switch)\s*\(", sample):
-                c_indicators += 1
-            if c_indicators >= 2:
-                return "c"
-
-            # Python: def/import/class patterns
-            if re.search(r"^(def |class |import |from .+ import |print\()", sample, re.M):
-                return "python"
-
-            return ""
-
-        def _format_tool_args(tc) -> str:
-            """Format tool call arguments with proper code blocks."""
-            parts = []
-            for k, v in tc.arguments.items():
-                if isinstance(v, str) and ("\n" in v or len(v) > 80):
-                    lang = _detect_lang(v, tc.name, k)
-                    parts.append(f"  - `{k}`:\n\n```{lang}\n{v}\n```\n")
-                else:
-                    parts.append(f"  - `{k}`: `{v!r}`")
-            return "\n".join(parts)
-
-        def _format_tool_result(tr) -> str:
-            """Format tool result content with syntax highlighting."""
-            content = tr.content
-            if len(content) > _TOOL_RESULT_TRUNCATE_CHARS:
-                content = content[:_TOOL_RESULT_TRUNCATE_CHARS] + "\n... (truncated)"
-            lang = _detect_lang(content, tr.name)
-            return f"```{lang}\n{content}\n```"
-
         lines = ["# Rikugan Chat Export\n"]
         lines.append(f"- **Model**: {session.model_name or 'unknown'}")
         lines.append(f"- **Exported**: {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -485,13 +478,13 @@ class RikuganPanelCore(QWidget):
                     lines.append(f"## Rikugan\n\n{msg.content}\n")
                 for tc in msg.tool_calls:
                     lines.append(f"**Tool call**: `{tc.name}`\n")
-                    lines.append(_format_tool_args(tc))
+                    lines.append(_export_format_tool_args(tc))
                     lines.append("")
             elif msg.role == Role.TOOL:
                 for tr in msg.tool_results:
                     status = "Error" if tr.is_error else "Result"
                     lines.append(f"**{status}** (`{tr.name}`):\n")
-                    lines.append(_format_tool_result(tr))
+                    lines.append(_export_format_tool_result(tr))
                     lines.append("")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))

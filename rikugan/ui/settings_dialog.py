@@ -211,40 +211,27 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addWidget(self._build_provider_group())
+        layout.addWidget(self._build_generation_group())
+        layout.addWidget(self._build_behavior_group())
 
-        # --- Provider group ---
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Connect provider/key change signals AFTER everything is built
+        self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        self._api_key_edit.editingFinished.connect(self._on_key_edited)
+
+    def _build_provider_group(self) -> "QGroupBox":
+        """Build the LLM Provider settings group box."""
         provider_group = QGroupBox("LLM Provider")
         provider_form = QFormLayout(provider_group)
 
-        provider_row = QHBoxLayout()
-        self._provider_combo = QComboBox()
-        self._populate_provider_combo()
-        idx = self._provider_combo.findText(self._config.provider.name)
-        if idx >= 0:
-            self._provider_combo.setCurrentIndex(idx)
-        provider_row.addWidget(self._provider_combo, 1)
-
-        btn_style = (
-            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-            "border-radius: 4px; font-size: 13px; font-weight: bold; }"
-            "QPushButton:hover { background: #3c3c3c; }"
-        )
-        self._add_provider_btn = QPushButton("+")
-        self._add_provider_btn.setFixedSize(28, 28)
-        self._add_provider_btn.setToolTip("Add custom OpenAI-compatible connection")
-        self._add_provider_btn.setStyleSheet(btn_style)
-        self._add_provider_btn.clicked.connect(self._on_add_custom_provider)
-        provider_row.addWidget(self._add_provider_btn)
-
-        self._remove_provider_btn = QPushButton("\u2212")  # minus sign
-        self._remove_provider_btn.setFixedSize(28, 28)
-        self._remove_provider_btn.setToolTip("Remove custom connection")
-        self._remove_provider_btn.setStyleSheet(btn_style)
-        self._remove_provider_btn.clicked.connect(self._on_remove_custom_provider)
-        provider_row.addWidget(self._remove_provider_btn)
-
-        # Connect AFTER setting index so it doesn't fire during construction
-        provider_form.addRow("Provider:", provider_row)
+        provider_form.addRow("Provider:", self._build_provider_row())
 
         # API key — only show explicit user keys, NOT auto-resolved OAuth tokens
         key_layout = QHBoxLayout()
@@ -252,7 +239,6 @@ class SettingsDialog(QDialog):
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_edit.setPlaceholderText("sk-... or leave empty for auto-detect")
         key_layout.addWidget(self._api_key_edit, 1)
-
         self._auth_status = QLabel()
         key_layout.addWidget(self._auth_status)
         provider_form.addRow("API Key:", key_layout)
@@ -261,7 +247,43 @@ class SettingsDialog(QDialog):
         self._api_base_edit.setPlaceholderText("Custom endpoint URL (optional)")
         provider_form.addRow("API Base:", self._api_base_edit)
 
-        # Model dropdown with fetch button
+        provider_form.addRow("Model:", self._build_model_row())
+
+        return provider_group
+
+    def _build_provider_row(self) -> "QHBoxLayout":
+        """Build the provider combo + add/remove buttons row."""
+        btn_style = (
+            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+            "border-radius: 4px; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background: #3c3c3c; }"
+        )
+        row = QHBoxLayout()
+        self._provider_combo = QComboBox()
+        self._populate_provider_combo()
+        idx = self._provider_combo.findText(self._config.provider.name)
+        if idx >= 0:
+            self._provider_combo.setCurrentIndex(idx)
+        row.addWidget(self._provider_combo, 1)
+
+        self._add_provider_btn = QPushButton("+")
+        self._add_provider_btn.setFixedSize(28, 28)
+        self._add_provider_btn.setToolTip("Add custom OpenAI-compatible connection")
+        self._add_provider_btn.setStyleSheet(btn_style)
+        self._add_provider_btn.clicked.connect(self._on_add_custom_provider)
+        row.addWidget(self._add_provider_btn)
+
+        self._remove_provider_btn = QPushButton("\u2212")  # minus sign
+        self._remove_provider_btn.setFixedSize(28, 28)
+        self._remove_provider_btn.setToolTip("Remove custom connection")
+        self._remove_provider_btn.setStyleSheet(btn_style)
+        self._remove_provider_btn.clicked.connect(self._on_remove_custom_provider)
+        row.addWidget(self._remove_provider_btn)
+
+        return row  # connected AFTER group is built (in _build_ui)
+
+    def _build_model_row(self) -> "QHBoxLayout":
+        """Build the model combo + refresh button + status row."""
         model_layout = QHBoxLayout()
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
@@ -283,12 +305,10 @@ class SettingsDialog(QDialog):
         self._model_status.setStyleSheet("color: #808080; font-size: 10px;")
         self._model_status.setWordWrap(True)
         model_layout.addWidget(self._model_status)
+        return model_layout
 
-        provider_form.addRow("Model:", model_layout)
-
-        layout.addWidget(provider_group)
-
-        # --- Generation group ---
+    def _build_generation_group(self) -> "QGroupBox":
+        """Build the Generation settings group box."""
         gen_group = QGroupBox("Generation")
         gen_form = QFormLayout(gen_group)
 
@@ -311,9 +331,10 @@ class SettingsDialog(QDialog):
         self._context_spin.setValue(self._config.provider.context_window)
         gen_form.addRow("Context Window:", self._context_spin)
 
-        layout.addWidget(gen_group)
+        return gen_group
 
-        # --- Behavior group ---
+    def _build_behavior_group(self) -> "QGroupBox":
+        """Build the Behavior settings group box."""
         behavior_group = QGroupBox("Behavior")
         behavior_form = QFormLayout(behavior_group)
 
@@ -334,19 +355,7 @@ class SettingsDialog(QDialog):
         )
         behavior_form.addRow("Exploration turn limit:", self._explore_turns_spin)
 
-        layout.addWidget(behavior_group)
-
-        # --- Buttons ---
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        # Connect provider/key change signals AFTER everything is built
-        self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
-        self._api_key_edit.editingFinished.connect(self._on_key_edited)
+        return behavior_group
 
     # --- Show event: defer all non-widget work to here ---
 
