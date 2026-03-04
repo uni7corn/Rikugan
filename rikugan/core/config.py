@@ -45,6 +45,7 @@ class RikuganConfig:
     plan_mode_default: bool = False
     checkpoint_auto_save: bool = True
     approve_mutations: bool = False  # require approval for mutating tools (rename, retype, etc.)
+    exploration_turn_limit: int = 30  # max turns in exploration phase before forcing transition
     theme: str = "dark"
 
     _config_dir: str = field(default_factory=_default_config_dir, repr=False)
@@ -110,7 +111,8 @@ class RikuganConfig:
         self.providers = data.get("providers", {})
         self.custom_providers = data.get("custom_providers", {})
         for k in ("auto_context", "plan_mode_default",
-                   "checkpoint_auto_save", "approve_mutations", "theme"):
+                   "checkpoint_auto_save", "approve_mutations",
+                   "exploration_turn_limit", "theme"):
             if k in data:
                 setattr(self, k, data[k])
 

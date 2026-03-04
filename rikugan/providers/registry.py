@@ -11,6 +11,7 @@ from .openai_provider import OpenAIProvider
 from .openai_compat import OpenAICompatProvider
 from .gemini_provider import GeminiProvider
 from .ollama_provider import OllamaProvider
+from .minimax_provider import MiniMaxProvider
 
 
 _BUILTIN_PROVIDERS: Dict[str, Type[LLMProvider]] = {
@@ -19,6 +20,7 @@ _BUILTIN_PROVIDERS: Dict[str, Type[LLMProvider]] = {
     "openai_compat": OpenAICompatProvider,
     "gemini": GeminiProvider,
     "ollama": OllamaProvider,
+    "minimax": MiniMaxProvider,
 }
 
 

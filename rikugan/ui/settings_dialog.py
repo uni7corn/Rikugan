@@ -21,6 +21,7 @@ from ..providers.registry import ProviderRegistry
 # Known default API base URLs per provider — used to auto-clear on switch
 _PROVIDER_BASES = {
     "ollama": DEFAULT_OLLAMA_URL,
+    "minimax": "https://api.minimax.io/anthropic",
 }
 
 # Placeholder/default keys that should be cleared on provider switch
@@ -101,7 +102,7 @@ class _ModelFetcher:
             return None
 
 
-_BUILTIN_PROVIDERS = ["anthropic", "openai", "gemini", "ollama", "openai_compat"]
+_BUILTIN_PROVIDERS = ["anthropic", "openai", "gemini", "ollama", "minimax", "openai_compat"]
 
 
 class _AddProviderDialog(QDialog):
@@ -321,6 +322,15 @@ class SettingsDialog(QDialog):
         self._auto_save_cb = QCheckBox("Auto-save sessions")
         self._auto_save_cb.setChecked(self._config.checkpoint_auto_save)
         behavior_form.addRow(self._auto_save_cb)
+
+        self._explore_turns_spin = QSpinBox()
+        self._explore_turns_spin.setRange(5, 200)
+        self._explore_turns_spin.setValue(self._config.exploration_turn_limit)
+        self._explore_turns_spin.setToolTip(
+            "Maximum turns the agent spends in the exploration phase before "
+            "forcing a transition (or reporting an error if findings are insufficient)."
+        )
+        behavior_form.addRow("Exploration turn limit:", self._explore_turns_spin)
 
         layout.addWidget(behavior_group)
 
@@ -608,4 +618,5 @@ class SettingsDialog(QDialog):
         self._config.provider.context_window = self._context_spin.value()
         self._config.auto_context = self._auto_context_cb.isChecked()
         self._config.checkpoint_auto_save = self._auto_save_cb.isChecked()
+        self._config.exploration_turn_limit = self._explore_turns_spin.value()
         self.accept()

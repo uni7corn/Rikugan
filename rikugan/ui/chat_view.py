@@ -34,6 +34,7 @@ class ChatView(QScrollArea):
     """Scrollable chat area that renders TurnEvents into widgets."""
 
     tool_approval_submitted = Signal(str, str)  # (tool_call_id, "allow"/"deny")
+    user_answer_submitted = Signal(str)          # chosen option / typed answer
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -251,7 +252,9 @@ class ChatView(QScrollArea):
             self._hide_thinking()
             self._reset_tool_run()
             options = event.metadata.get("options", [])
-            self._insert_widget(UserQuestionWidget(event.text, options))
+            widget = UserQuestionWidget(event.text, options)
+            widget.option_selected.connect(self._on_user_answer)
+            self._insert_widget(widget)
             self._scroll_to_bottom()
 
         elif etype == TurnEventType.PLAN_GENERATED:
@@ -260,6 +263,16 @@ class ChatView(QScrollArea):
             self._plan_view = PlanView()
             if event.plan_steps:
                 self._plan_view.set_plan(event.plan_steps)
+            def _on_plan_approve(pv=self._plan_view):
+                pv.set_buttons_visible(False)
+                self._on_user_answer("approve")
+
+            def _on_plan_reject(pv=self._plan_view):
+                pv.set_buttons_visible(False)
+                self._on_user_answer("reject")
+
+            self._plan_view.set_approved_callback(_on_plan_approve)
+            self._plan_view.set_rejected_callback(_on_plan_reject)
             self._insert_widget(self._plan_view)
             self._scroll_to_bottom()
 
@@ -309,9 +322,10 @@ class ChatView(QScrollArea):
         elif etype == TurnEventType.SAVE_APPROVAL_REQUEST:
             self._hide_thinking()
             self._reset_tool_run()
-            # Rendered as a user question with save options
             options = ["Save All", "Discard All"]
-            self._insert_widget(UserQuestionWidget(event.text, options))
+            widget = UserQuestionWidget(event.text, options)
+            widget.option_selected.connect(self._on_user_answer)
+            self._insert_widget(widget)
             self._scroll_to_bottom()
 
         elif etype == TurnEventType.CANCELLED:
@@ -323,6 +337,10 @@ class ChatView(QScrollArea):
     def _on_tool_approval(self, tool_call_id: str, decision: str) -> None:
         """Forward tool approval decision to the panel/controller."""
         self.tool_approval_submitted.emit(tool_call_id, decision)
+
+    def _on_user_answer(self, answer: str) -> None:
+        """Forward a button-selected answer to the panel/controller."""
+        self.user_answer_submitted.emit(answer)
 
     def restore_from_messages(self, messages: List[Message]) -> None:
         """Replay saved Message objects into the chat view."""

@@ -1,24 +1,38 @@
-"""MiniMax provider implementation."""
+"""MiniMax provider — Anthropic SDK against MiniMax's compatible API.
+
+MiniMax recommends the Anthropic SDK for integration:
+  https://platform.minimax.io/docs/guides/quickstart-sdk
+
+Base URL:  https://api.minimax.io/anthropic
+Auth:      plain API key (no OAuth)
+"""
 
 from __future__ import annotations
 
-import json
-from typing import Any, Dict, Generator, List, Optional
-
 import importlib
+from typing import Any, Dict, List, Optional
 
-from ..core.logging import log_debug, log_error
-from ..core.types import Message, ModelInfo, ProviderCapabilities, Role, StreamChunk, TokenUsage
+from ..core.errors import AuthenticationError, ProviderError
+from ..core.types import ModelInfo, ProviderCapabilities
 from .base import LLMProvider
+from .anthropic_provider import AnthropicProvider
 
 
-class MiniMaxProvider(LLMProvider):
-    """MiniMax LLM provider."""
+class MiniMaxProvider(AnthropicProvider):
+    """MiniMax LLM provider using the Anthropic-compatible API at api.minimax.io."""
 
-    DEFAULT_API_BASE = "https://api.minimax.chat/v1"
+    DEFAULT_API_BASE = "https://api.minimax.io/anthropic"
 
-    def __init__(self, api_key: str = "", api_base: str = "", model: str = ""):
-        super().__init__(api_key, api_base or self.DEFAULT_API_BASE, model)
+    def __init__(self, api_key: str = "", api_base: str = "", model: str = "MiniMax-M2.5", **kwargs):
+        # Bypass AnthropicProvider.__init__ — MiniMax uses plain API keys only,
+        # no OAuth keychain lookup.
+        LLMProvider.__init__(
+            self,
+            api_key=api_key,
+            api_base=api_base or self.DEFAULT_API_BASE,
+            model=model,
+        )
+        self._auth_type = "api_key"
 
     @property
     def name(self) -> str:
@@ -28,243 +42,96 @@ class MiniMaxProvider(LLMProvider):
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             streaming=True,
-            tools=True,
+            tool_use=True,
             vision=False,
-            max_tokens=8192,
+            max_context_window=204800,
+            max_output_tokens=8192,
+            supports_system_prompt=True,
+            supports_cache_control=False,
         )
 
     def _get_client(self):
         if self._client is None:
-            openai = importlib.import_module("openai")
-            self._client = openai.OpenAI(
+            try:
+                anthropic = importlib.import_module("anthropic")
+            except ImportError:
+                raise ProviderError(
+                    "anthropic package not installed. Run: pip install anthropic",
+                    provider="minimax",
+                )
+            if not self.api_key:
+                raise AuthenticationError(provider="minimax")
+            self._client = anthropic.Anthropic(
                 api_key=self.api_key,
                 base_url=self.api_base,
             )
         return self._client
 
+    def auth_status(self):
+        if self.api_key:
+            return "API Key", "ok"
+        return "", "none"
+
     @staticmethod
     def _builtin_models() -> List[ModelInfo]:
         return [
-            ModelInfo(id="MiniMax-M2.5", name="MiniMax M2.5", context_length=245760),
-            ModelInfo(id="MiniMax-M2.5-Light", name="MiniMax M2.5 Lightning", context_length=245760),
-            ModelInfo(id="MiniMax-Text-01", name="MiniMax Text 01", context_length=245760),
+            ModelInfo(id="MiniMax-M2.5", name="MiniMax M2.5", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
+            ModelInfo(id="MiniMax-M2.5-highspeed", name="MiniMax M2.5 Highspeed", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
+            ModelInfo(id="MiniMax-M2.1", name="MiniMax M2.1", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
+            ModelInfo(id="MiniMax-M2.1-highspeed", name="MiniMax M2.1 Highspeed", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
+            ModelInfo(id="MiniMax-M2", name="MiniMax M2", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
         ]
 
     def _fetch_models_live(self) -> List[ModelInfo]:
-        client = self._get_client()
-        response = client.models.list()
-        models = []
-        for m in response.data:
-            if m.id.startswith("MiniMax"):
-                models.append(ModelInfo(
+        try:
+            client = self._get_client()
+            response = client.models.list(limit=50)
+            models = [
+                ModelInfo(
                     id=m.id,
-                    name=m.id,
-                    context_length=getattr(m, "context_window", 245760),
-                ))
-        return models or self._builtin_models()
-
-    def _format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert internal messages to MiniMax format."""
-        formatted = []
-        for msg in messages:
-            if msg.role == Role.SYSTEM:
-                formatted.append({"role": "system", "content": msg.content})
-            elif msg.role == Role.USER:
-                formatted.append({"role": "user", "content": msg.content})
-            elif msg.role == Role.ASSISTANT:
-                content = msg.content or ""
-                if msg.tool_calls:
-                    tool_calls = []
-                    for tc in msg.tool_calls:
-                        tool_calls.append({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        })
-                    formatted.append({
-                        "role": "assistant",
-                        "content": content,
-                        "tool_calls": tool_calls,
-                    })
-                else:
-                    formatted.append({"role": "assistant", "content": content})
-            elif msg.role == Role.TOOL:
-                formatted.append({
-                    "role": "tool",
-                    "tool_call_id": msg.tool_call_id,
-                    "content": msg.content,
-                })
-        return formatted
-
-    def _normalize_response(self, response) -> Message:
-        """Convert MiniMax response to internal Message."""
-        choice = response.choices[0]
-        text = choice.message.content or ""
-        tool_calls = []
-
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments) if tc.function.arguments else {},
-                ))
-
-        usage = TokenUsage(
-            prompt_tokens=response.usage.prompt_tokens if response.usage else 0,
-            completion_tokens=response.usage.completion_tokens if response.usage else 0,
-            total_tokens=response.usage.total_tokens if response.usage else 0,
-        )
-
-        return Message(
-            role=Role.ASSISTANT,
-            content=text,
-            tool_calls=tool_calls,
-            token_usage=usage,
-        )
-
-    def _handle_api_error(self, e: Exception) -> None:
-        """Raise the appropriate Rikugan error from a MiniMax API error."""
-        openai = importlib.import_module("openai")
-
-        if isinstance(e, openai.AuthenticationError):
-            from ..core.errors import AuthenticationError
-            raise AuthenticationError(provider="minimax") from e
-        if isinstance(e, openai.RateLimitError):
-            from ..core.errors import RateLimitError
-            raise RateLimitError(provider="minimax", retry_after=5.0) from e
-        if isinstance(e, openai.BadRequestError):
-            msg = str(e)
-            from ..core.errors import ContextLengthError, ProviderError
-            if "context" in msg.lower() or "token" in msg.lower():
-                raise ContextLengthError(msg, provider="minimax") from e
-            raise ProviderError(msg, provider="minimax") from e
-        from ..core.errors import ProviderError
-        raise ProviderError(str(e), provider="minimax") from e
+                    name=getattr(m, "display_name", None) or m.id,
+                    provider="minimax",
+                    context_window=204800,
+                    max_output_tokens=8192,
+                    supports_tools=True,
+                )
+                for m in response.data
+                if m.id.lower().startswith("minimax")
+            ]
+            return models or self._builtin_models()
+        except Exception:
+            return self._builtin_models()
 
     def _build_request_kwargs(
         self,
-        messages: List[Message],
+        messages,
         tools: Optional[List[Dict[str, Any]]],
         temperature: float,
         max_tokens: int,
         system: str,
     ) -> Dict[str, Any]:
-        """Build kwargs dict for chat.completions.create."""
-        msgs = []
-        if system:
-            msgs.append({"role": "system", "content": system})
-        msgs.extend(self._format_messages(messages))
+        """Build request kwargs, stripping cache_control (not supported by MiniMax)."""
+        kwargs = super()._build_request_kwargs(messages, tools, temperature, max_tokens, system)
 
-        kwargs: Dict[str, Any] = {
-            "model": self.model,
-            "messages": msgs,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        if tools:
-            kwargs["tools"] = tools
+        # System prompt: strip cache_control from blocks
+        if isinstance(kwargs.get("system"), list):
+            for block in kwargs["system"]:
+                block.pop("cache_control", None)
+            # If only one plain text block, collapse to a string
+            if len(kwargs["system"]) == 1 and kwargs["system"][0].get("type") == "text":
+                kwargs["system"] = kwargs["system"][0]["text"]
+
+        # Messages: strip cache_control from content blocks
+        for msg in kwargs.get("messages", []):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        block.pop("cache_control", None)
+
+        # Tools: strip cache_control
+        for tool in kwargs.get("tools", []):
+            if isinstance(tool, dict):
+                tool.pop("cache_control", None)
+
         return kwargs
-
-    def chat(
-        self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        system: str = "",
-    ) -> Message:
-        client = self._get_client()
-        kwargs = self._build_request_kwargs(messages, tools, temperature, max_tokens, system)
-
-        try:
-            response = client.chat.completions.create(**kwargs)
-        except Exception as e:
-            self._handle_api_error(e)
-
-        return self._normalize_response(response)
-
-    def chat_stream(
-        self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        system: str = "",
-    ) -> Generator[StreamChunk, None, None]:
-        client = self._get_client()
-        kwargs = self._build_request_kwargs(messages, tools, temperature, max_tokens, system)
-        kwargs["stream"] = True
-
-        try:
-            stream = client.chat.completions.create(**kwargs)
-            current_tool_calls: Dict[int, dict] = {}
-
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-
-                if delta.content:
-                    yield StreamChunk(text=delta.content)
-
-                if delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in current_tool_calls:
-                            current_tool_calls[idx] = {
-                                "id": tc_delta.id or "",
-                                "name": tc_delta.function.name if tc_delta.function and tc_delta.function.name else "",
-                                "args": "",
-                            }
-                            if tc_delta.id:
-                                yield StreamChunk(
-                                    tool_call_id=tc_delta.id,
-                                    tool_name=tc_delta.function.name if tc_delta.function else "",
-                                    is_tool_call_start=True,
-                                )
-
-                        if tc_delta.function and tc_delta.function.arguments:
-                            current_tool_calls[idx]["args"] += tc_delta.function.arguments
-                            yield StreamChunk(
-                                tool_call_id=current_tool_calls[idx]["id"],
-                                tool_name=current_tool_calls[idx]["name"],
-                                tool_args_delta=tc_delta.function.arguments,
-                            )
-
-                if chunk.choices[0].finish_reason:
-                    for tc_info in current_tool_calls.values():
-                        yield StreamChunk(
-                            tool_call_id=tc_info["id"],
-                            tool_name=tc_info["name"],
-                            is_tool_call_end=True,
-                        )
-                    yield StreamChunk(finish_reason=chunk.choices[0].finish_reason)
-
-                if chunk.usage:
-                    yield StreamChunk(usage=TokenUsage(
-                        prompt_tokens=chunk.usage.prompt_tokens,
-                        completion_tokens=chunk.usage.completion_tokens,
-                        total_tokens=chunk.usage.total_tokens,
-                    ))
-
-        except Exception as e:
-            log_error(f"MiniMaxProvider.chat_stream error: {e}")
-            self._handle_api_error(e)
-
-    def auth_status(self) -> tuple:
-        """Return authentication status."""
-        if self.api_key:
-            return "API Key", "ok"
-        return "", "none"
-
-
-class ToolCall:
-    """Minimal ToolCall replacement for this module."""
-    def __init__(self, id: str, name: str, arguments: dict):
-        self.id = id
-        self.name = name
-        self.arguments = arguments

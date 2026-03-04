@@ -593,11 +593,7 @@ class AgentLoop:
             ))
         state.modification_plan = ModificationPlan(changes=changes, rationale=plan_text)
 
-        # User approval gate
-        yield TurnEvent.user_question(
-            "Do you want to execute this modification plan?",
-            ["Approve", "Reject"], "__plan_approval__",
-        )
+        # User approval gate — PlanView buttons handle this; just wait for the answer.
         answer = self._wait_for_queue(self._user_answer_queue).strip().lower()
         if answer not in ("approve", "1", "yes", "y"):
             yield TurnEvent.error_event("Modification plan rejected by user.")
@@ -741,6 +737,7 @@ class AgentLoop:
     ) -> Generator[TurnEvent, None, None]:
         """Run the agent in exploration mode: explore → plan → patch → save."""
         state = ExplorationState(explore_only=explore_only)
+        state.max_explore_turns = self.session.config.exploration_turn_limit
         state.knowledge_base.user_goal = user_message
         self._exploration_state = state
 
@@ -1012,13 +1009,7 @@ class AgentLoop:
 
         yield TurnEvent.plan_generated(steps)
 
-        # Phase 2: Get user approval via ask_user mechanism
-        yield TurnEvent.user_question(
-            "Do you want to execute this plan?",
-            ["Approve", "Reject"],
-            "__plan_approval__",
-        )
-
+        # Phase 2: Wait for user approval — PlanView buttons handle the UI.
         answer = self._wait_for_queue(self._user_answer_queue).strip().lower()
         if answer not in ("approve", "1", "yes", "y"):
             yield TurnEvent.error_event("Plan rejected by user.")

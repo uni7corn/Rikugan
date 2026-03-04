@@ -225,24 +225,30 @@ class RikuganPanelCore(QWidget):
         btn_layout = QVBoxLayout()
         btn_layout.setSpacing(4)
 
+        small_btn_style = (
+            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+            "border-radius: 6px; padding: 4px; font-size: 11px; }"
+            "QPushButton:hover { background: #3c3c3c; }"
+        )
+
         self._send_btn = QPushButton("Send")
         self._send_btn.setObjectName("send_button")
         self._send_btn.setFixedWidth(64)
+        self._send_btn.setStyleSheet(small_btn_style)
         self._send_btn.clicked.connect(self._on_send_clicked)
         btn_layout.addWidget(self._send_btn)
 
         self._cancel_btn = QPushButton("Stop")
         self._cancel_btn.setObjectName("cancel_button")
         self._cancel_btn.setFixedWidth(64)
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.clicked.connect(self._on_cancel)
-        btn_layout.addWidget(self._cancel_btn)
-
-        small_btn_style = (
-            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+        self._cancel_btn.setStyleSheet(
+            "QPushButton { background: #2d2d2d; color: #c42b1c; border: 1px solid #3c3c3c; "
             "border-radius: 6px; padding: 4px; font-size: 11px; }"
             "QPushButton:hover { background: #3c3c3c; }"
         )
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        btn_layout.addWidget(self._cancel_btn)
 
         self._new_btn = QPushButton("New")
         self._new_btn.setFixedWidth(64)
@@ -298,6 +304,7 @@ class RikuganPanelCore(QWidget):
         """Create a new ChatView and add it as a tab."""
         chat_view = ChatView()
         chat_view.tool_approval_submitted.connect(self._on_tool_approval)
+        chat_view.user_answer_submitted.connect(self._on_user_answer_submitted)
         self._chat_views[tab_id] = chat_view
         index = self._tab_widget.addTab(chat_view, label)
         self._tab_widget.setCurrentIndex(index)
@@ -728,7 +735,8 @@ class RikuganPanelCore(QWidget):
             token_count = event.usage.prompt_tokens or event.usage.total_tokens
             if token_count > 0:
                 self._update_token_display(token_count)
-        if event.type in (TurnEventType.USER_QUESTION, TurnEventType.SAVE_APPROVAL_REQUEST):
+        if event.type in (TurnEventType.USER_QUESTION, TurnEventType.SAVE_APPROVAL_REQUEST,
+                          TurnEventType.PLAN_GENERATED):
             self._pending_answer = True
             self._set_running(False)
         if event.type == TurnEventType.MUTATION_RECORDED:
@@ -739,6 +747,19 @@ class RikuganPanelCore(QWidget):
         runner = self._ctrl.get_runner()
         if runner:
             runner.agent_loop.submit_tool_approval(decision)
+
+    def _on_user_answer_submitted(self, answer: str) -> None:
+        """Handle a button click from UserQuestionWidget (plan/save/ask_user)."""
+        if not self._pending_answer:
+            return
+        self._pending_answer = False
+        chat_view = self._active_chat_view()
+        if chat_view is not None:
+            chat_view.add_user_message(answer)
+        self._set_running(True)
+        runner = self._ctrl.get_runner()
+        if runner:
+            runner.agent_loop.submit_user_answer(answer)
 
     def _on_agent_finished(self) -> None:
         if self._is_shutdown:

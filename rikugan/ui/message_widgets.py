@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 import re as _re
 
 from .qt_compat import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton,
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QPushButton,
     QWidget, QSizePolicy, Qt, Signal, QTimer, QPlainTextEdit,
 )
 from .markdown import md_to_html
@@ -1043,7 +1043,9 @@ class QueuedMessageWidget(QFrame):
 
 
 class UserQuestionWidget(QFrame):
-    """Displays a question from the agent to the user."""
+    """Displays a question from the agent to the user with clickable option buttons."""
+
+    option_selected = Signal(str)  # emitted with the chosen option text
 
     def __init__(self, question: str, options: list = None, parent: QWidget = None):
         super().__init__(parent)
@@ -1055,6 +1057,7 @@ class UserQuestionWidget(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
 
         header = QLabel("Rikugan asks:")
         header.setStyleSheet("color: #dcdcaa; font-weight: bold; font-size: 11px;")
@@ -1067,14 +1070,31 @@ class UserQuestionWidget(QFrame):
         layout.addWidget(q_label)
 
         if options:
-            for i, opt in enumerate(options, 1):
-                opt_label = QLabel(f"  {i}. {opt}")
-                opt_label.setStyleSheet("color: #9cdcfe; font-size: 12px;")
-                layout.addWidget(opt_label)
+            btn_layout = QHBoxLayout()
+            btn_layout.setContentsMargins(0, 4, 0, 0)
+            btn_layout.setSpacing(8)
+            for opt in options:
+                btn = QPushButton(opt)
+                btn.setStyleSheet(
+                    "QPushButton { background: #2d4a6e; color: #9cdcfe; border: 1px solid #4a7ab5; "
+                    "border-radius: 4px; padding: 4px 14px; font-size: 12px; }"
+                    "QPushButton:hover { background: #3a5a8a; }"
+                    "QPushButton:pressed { background: #1a3a5e; }"
+                    "QPushButton:disabled { color: #808080; background: #1e2a3a; border-color: #444; }"
+                )
+                btn.clicked.connect(lambda checked, o=opt: self._on_option(o))
+                btn_layout.addWidget(btn)
+            btn_layout.addStretch()
+            layout.addLayout(btn_layout)
+            self._buttons = btn_layout
 
-            hint = QLabel("Type your answer or a number to choose an option.")
-            hint.setStyleSheet("color: #808080; font-size: 10px; font-style: italic;")
-            layout.addWidget(hint)
+    def _on_option(self, option: str) -> None:
+        # Disable all buttons after selection
+        for i in range(self._buttons.count()):
+            item = self._buttons.itemAt(i)
+            if item and item.widget():
+                item.widget().setEnabled(False)
+        self.option_selected.emit(option)
 
 
 class _PythonHighlighter(QSyntaxHighlighter):

@@ -86,6 +86,7 @@ rikugan/
 │   ├── openai_provider.py    # OpenAI
 │   ├── gemini_provider.py    # Google Gemini
 │   ├── ollama_provider.py    # Ollama (local)
+│   ├── minimax_provider.py   # MiniMax (subclasses OpenAICompatProvider)
 │   └── openai_compat.py      # OpenAI-compatible endpoints
 │
 ├── mcp/                      # MCP client (host-agnostic)
@@ -331,3 +332,23 @@ IDA tool modules use `importlib.import_module()` for all `ida_*` imports to avoi
 - **`idautils.Entries()`** yields 4 values: `(index, ordinal, ea, name)`
 - **`ida_hexrays.decompile()`** can raise `DecompilationFailure` — always wrap in try/except
 - All IDA API calls must run on the main thread — the `@idasync` wrapper handles this automatically
+
+### Python Version Warning (IDA Pro)
+
+IDA Pro's Qt/PySide6 binding (Shiboken) has a known Use-After-Free bug triggered when Python > 3.10 imports C-extension modules during Qt signal dispatch. Rikugan mitigates this by:
+
+1. Routing all `ida_*` imports through `importlib.import_module()` to bypass Shiboken's `__import__` hook
+2. Installing a re-entrancy guard on `builtins.__import__` to prevent nested imports during signal dispatch
+
+**Python 3.10 is the safest choice for IDA Pro.** Higher versions may still work with the mitigations in place, but can exhibit instability. See [upstream report](https://community.hex-rays.com/t/ida-9-3-b1-macos-arm64-uaf-crash/646).
+
+### Known Broken IDA Tools
+
+The following tools have confirmed bugs as of the last test pass. Root cause is likely lazy/missing module imports inside the tool handlers:
+
+| Tool | Error | Suspected Cause |
+|------|-------|-----------------|
+| `create_struct` | `name 'ida_struct' is not defined` | `ida_struct` removed in IDA 9.x — needs `ida_typeinf` migration |
+| `import_c_header` | `name 'idc' is not defined` | `idc` not imported in handler; use `importlib.import_module("idc")` |
+| `set_function_prototype` | `name 'idc' is not defined` | Same as above |
+| `apply_type_to_variable` | `Hex-Rays not available` | Decompiler guard fires even when Hex-Rays is active — check availability detection |

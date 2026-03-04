@@ -121,9 +121,11 @@ Rikugan is inspired by how Claude Code maintains its memory. Every important fin
 ## Requirements
 
 - IDA Pro 9.0+ with Hex-Rays decompiler or Binary Ninja (UI mode)
-- Python 3.9+
+- Python 3.9+ (**see note below for IDA Pro**)
 - At least one LLM provider
 - Windows, macOS, or Linux
+
+> **IDA Pro + Python > 3.10 warning:** IDA Pro's Qt/PySide6 binding (Shiboken) has a known Use-After-Free bug that can cause crashes when Python > 3.10 is used. The issue is triggered by Shiboken's `__import__` hook during Qt signal dispatch — Rikugan works around this by routing all `ida_*` imports through `importlib.import_module()` and installing a re-entrancy guard on `builtins.__import__`. That said, Python 3.10 is still the safest choice for IDA Pro. See the [upstream report](https://community.hex-rays.com/t/ida-9-3-b1-macos-arm64-uaf-crash/646) for details.
 
 
 ## Installation
@@ -320,6 +322,28 @@ Uses Hex-Rays MMAT maturity levels. Includes `redecompile_function` to refresh o
 | **IL** | `get_il` `get_il_block` `nop_instructions` `install_il_optimizer` `remove_il_optimizer` `list_il_optimizers` |
 
 Uses native IL levels (`llil`, `mlil`, `hlil`). Includes `redecompile_function` to refresh output after IL patches.
+
+
+## Recommended Providers
+
+Rikugan supports Anthropic, OpenAI, Google Gemini, MiniMax, Ollama, and any OpenAI-compatible endpoint. Below is a summary of what has been tested in practice.
+
+### Tested Providers
+
+| Provider | Notes |
+|----------|-------|
+| **Claude Opus 4.6** | Best overall for deep reasoning and complex reverse-engineering tasks. Expensive via API — recommend using your Claude Pro/Max plan with OAuth instead. |
+| **Claude Sonnet 4.6** | Good performance at lower cost. Handles complex tasks well. Also better used through a Claude plan than via API to avoid rate limits. Both Anthropic models use **prompt caching** to reduce token spend, but API rate limits hit faster than plan limits. |
+| **MiniMax M2.5 / M2.5 Highspeed** | Excellent performance at significantly lower cost. In local tests performed on par with Opus 4.6. Very generous usage limits and high TPM (tokens per minute). Uses the Anthropic-compatible API (`api.minimax.io/anthropic`). Recommended if you want top-tier results without the API bill. |
+| **Gemini 2.5 / 3 / 3.1 Pro** | Solid results overall. Hallucinates more than Anthropic/MiniMax models but can solve many tasks effectively. |
+| **Kimi 2.5** | Strong coding skills, but lacks the deterministic and logical approach that complex reverse-engineering tasks require. |
+| **LLAMA 70B (local via Ollama)** | Interesting analysis results but not production-ready for RE tasks. |
+| **GPT 120B OSS (local)** | Similar to LLAMA 70B — lacks reasoning depth. |
+
+### Needs more testing
+
+- GPT-5.3 Codex
+- GPT-5.2
 
 
 ## Conclusion
