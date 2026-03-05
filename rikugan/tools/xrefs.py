@@ -22,13 +22,14 @@ def format_callers_callees(fname: str, start: int, callers: Iterable[str], calle
     return "\n".join(parts)
 
 
+ida_funcs = ida_name = ida_xref = idautils = None  # populated below when IDA is available
 try:
     ida_funcs = importlib.import_module("ida_funcs")
     ida_name = importlib.import_module("ida_name")
     ida_xref = importlib.import_module("ida_xref")
     idautils = importlib.import_module("idautils")
 except ImportError:
-    pass
+    ida_funcs = ida_name = ida_xref = idautils = None  # IDA not present — tools unavailable in non-IDA context
 
 
 # Xref type constants → human-readable names.

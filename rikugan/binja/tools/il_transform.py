@@ -460,14 +460,14 @@ def install_il_workflow(
     if il_level not in ("llil", "mlil"):
         return "il_level must be 'llil' or 'mlil'"
 
-    # Compile the user code
-    ns = {"__builtins__": __builtins__}
+    # Compile the user code — exec is expected to define transform() in ns
+    ns: dict = {"__builtins__": __builtins__, "transform": None}
     try:
         exec(python_code, ns)  # noqa: S102 — user-authored workflow transform
     except Exception as e:
         return f"Failed to compile transform code: {e}"
 
-    transform_fn = ns.get("transform")
+    transform_fn = ns["transform"]
     if not callable(transform_fn):
         return "python_code must define a transform(analysis_context, il_func) function"
 

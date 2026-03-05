@@ -17,7 +17,7 @@ install_ida_mocks()
 
 # Force-reload tool modules so they pick up all IDA mocks (including ida_ida).
 import importlib
-import iris.tools.database as _db_mod
+import rikugan.tools.database as _db_mod
 importlib.reload(_db_mod)
 
 

@@ -112,7 +112,7 @@ Rikugan is inspired by how Claude Code maintains its memory. Every important fin
 
 ![alt text](assets/memory.png)
 
-### Deobfuscation (Experimental, Binary Ninja only)
+### Deobfuscation (Experimental, designed for Binary Ninja only)
 
 The `/deobfuscation` skill activates plan mode — the agent reads the IL, figures out what the obfuscation is doing, and uses IL write primitives or byte patching to undo it.
 

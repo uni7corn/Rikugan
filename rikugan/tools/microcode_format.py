@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import importlib
 
+from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
 from ..core.errors import ToolError
 from ..core.logging import log_debug
 
-_HAS_HEXRAYS = False
+ida_hexrays = ida_lines = ida_name = None
 try:
     ida_hexrays = importlib.import_module("ida_hexrays")
     ida_lines = importlib.import_module("ida_lines")
     ida_name = importlib.import_module("ida_name")
-    _HAS_HEXRAYS = True
 except ImportError as e:
     log_debug(f"IDA modules not available: {e}")
 
@@ -49,10 +49,10 @@ def parse_maturity(name: str) -> int:
         return _MATURITY_LEVELS[name]
     try:
         val = int(name)
-        if 0 <= val <= 7:
-            return val
     except ValueError:
-        pass
+        val = None
+    if val is not None and 0 <= val <= 7:
+        return val
     raise ToolError(
         f"Unknown maturity level: {name!r}. "
         f"Valid levels: {', '.join(_MATURITY_LEVELS.keys())}",

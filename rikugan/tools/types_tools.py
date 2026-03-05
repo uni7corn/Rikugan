@@ -6,13 +6,13 @@ import importlib
 import json
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
+from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
 from ..core.errors import ToolError
 from ..core.logging import log_debug
 from .base import parse_addr, tool
 
 # Import each module independently so a single missing module (e.g. ida_struct
 # removed in IDA 9.x) does not prevent the others from loading.
-_HAS_HEXRAYS = False
 _HAS_IDA_STRUCT = False
 
 ida_auto = None
@@ -36,7 +36,6 @@ for _mod_name, _target in (
     except ImportError as _e:
         log_debug(f"IDA module not available: {_mod_name}: {_e}")
 
-_HAS_HEXRAYS = ida_hexrays is not None
 _HAS_IDA_STRUCT = ida_struct is not None
 
 # ida_enum was removed in IDA 9.x (enums merged into ida_typeinf).

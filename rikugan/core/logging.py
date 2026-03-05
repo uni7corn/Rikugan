@@ -18,12 +18,10 @@ import threading
 import traceback
 from typing import Optional
 
-from ..constants import IDA_AVAILABLE as _IDA_AVAILABLE
-from .host import get_user_config_base_dir, is_binary_ninja as _is_binary_ninja
+from ..constants import IDA_AVAILABLE as _IDA_AVAILABLE, BINARY_NINJA_AVAILABLE as _BN_AVAILABLE
+from .host import get_user_config_base_dir
 if _IDA_AVAILABLE:
     ida_kernwin = importlib.import_module("ida_kernwin")
-
-_BN_AVAILABLE = _is_binary_ninja()
 _bn_log = None
 if _BN_AVAILABLE:
     try:

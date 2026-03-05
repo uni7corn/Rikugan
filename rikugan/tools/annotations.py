@@ -5,17 +5,17 @@ from __future__ import annotations
 import importlib
 from typing import Annotated, Optional
 
+from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
 from .base import parse_addr, tool
 
-_HAS_HEXRAYS = False
+ida_funcs = ida_hexrays = ida_name = idc = None
 try:
     ida_funcs = importlib.import_module("ida_funcs")
     ida_hexrays = importlib.import_module("ida_hexrays")
     ida_name = importlib.import_module("ida_name")
     idc = importlib.import_module("idc")
-    _HAS_HEXRAYS = True
 except ImportError:
-    pass
+    pass  # IDA not present — _HAS_HEXRAYS guard handles graceful degradation
 
 
 @tool(category="annotations", mutating=True)

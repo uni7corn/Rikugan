@@ -11,12 +11,12 @@ import importlib
 import textwrap
 from typing import Any, Callable, Dict
 
+from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
 from ..core.logging import log_debug
 
-_HAS_HEXRAYS = False
+ida_hexrays = None
 try:
     ida_hexrays = importlib.import_module("ida_hexrays")
-    _HAS_HEXRAYS = True
 except ImportError as e:
     log_debug(f"IDA modules not available: {e}")
 

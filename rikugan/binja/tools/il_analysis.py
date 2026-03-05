@@ -27,15 +27,6 @@ def _get_il(func: Any, level: str = "mlil") -> Any:
     return None
 
 
-def _block_addr_range(block: Any) -> str:
-    """Format a block's address range."""
-    start = getattr(block, "start", None)
-    end = getattr(block, "end", None)
-    if isinstance(start, int) and isinstance(end, int):
-        return f"0x{start:x}-0x{end:x}"
-    return str(block)
-
-
 def _edge_type_name(edge: Any) -> str:
     """Get human-readable edge type."""
     etype = getattr(edge, "type", None)
@@ -58,12 +49,6 @@ def _is_const_expr(expr: Any) -> Tuple[bool, Optional[int]]:
         if isinstance(val, int):
             return True, val
     return False, None
-
-
-def _get_op_name(expr: Any) -> str:
-    """Get the operation name of an IL expression."""
-    op = getattr(expr, "operation", None)
-    return getattr(op, "name", "") if op else ""
 
 
 def _get_var_name(var: Any) -> str:

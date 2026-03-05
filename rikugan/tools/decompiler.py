@@ -5,16 +5,16 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
+from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
 from ..core.errors import ToolError
 from .base import parse_addr, tool
 
-_HAS_HEXRAYS = False
+ida_hexrays = ida_lines = None
 try:
     ida_hexrays = importlib.import_module("ida_hexrays")
     ida_lines = importlib.import_module("ida_lines")
-    _HAS_HEXRAYS = True
 except ImportError:
-    pass
+    pass  # Hex-Rays not present — _HAS_HEXRAYS guard handles graceful degradation
 
 
 def _decompile(ea: int):

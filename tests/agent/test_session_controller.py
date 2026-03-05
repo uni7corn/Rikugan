@@ -40,13 +40,11 @@ class TestSessionController(unittest.TestCase):
         self.ctrl.queue_message("first")
         self.ctrl.queue_message("second")
 
-        # on_agent_finished pops the first pending message
+        # on_agent_finished discards all pending messages
         next_msg = self.ctrl.on_agent_finished()
-        self.assertEqual(next_msg, "first")
+        self.assertIsNone(next_msg)
 
-        next_msg = self.ctrl.on_agent_finished()
-        self.assertEqual(next_msg, "second")
-
+        # Subsequent calls also return None (queue was cleared)
         next_msg = self.ctrl.on_agent_finished()
         self.assertIsNone(next_msg)
 
@@ -89,7 +87,7 @@ class TestSessionController(unittest.TestCase):
         # Verify session was saved to disk
         from rikugan.state.history import SessionHistory
         history = SessionHistory(self.cfg)
-        sessions = history.list_sessions()
+        sessions = history.list_sessions(db_instance_id=self.ctrl._db_instance_id)
         self.assertTrue(any(s["id"] == self.ctrl.session.id for s in sessions))
 
     def test_restore_session(self):

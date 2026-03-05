@@ -12,7 +12,7 @@ install_ida_mocks()
 
 # The _handle_* functions are defined inside `if _HAS_IDA:` block,
 # so they exist in the module namespace after import with IDA mocks.
-import iris.ui.actions as actions_mod
+import rikugan.ida.ui.actions as actions_mod
 
 
 class TestActionHandlers(unittest.TestCase):

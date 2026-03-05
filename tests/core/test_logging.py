@@ -106,7 +106,7 @@ class TestIDAHandler(unittest.TestCase):
     def test_emit_to_stderr_when_no_ida(self):
         """When _IDA_AVAILABLE is False, IDAHandler falls back to stderr."""
         import io
-        import iris.core.logging as log_mod
+        import rikugan.core.logging as log_mod
 
         handler = IDAHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))

@@ -9,12 +9,9 @@ from typing import Any, Callable, Optional, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-from ..constants import IDA_AVAILABLE as _IDA_AVAILABLE
-from .host import is_binary_ninja as _is_binary_ninja
+from ..constants import IDA_AVAILABLE as _IDA_AVAILABLE, BINARY_NINJA_AVAILABLE as _BN_AVAILABLE
 if _IDA_AVAILABLE:
     ida_kernwin = importlib.import_module("ida_kernwin")
-
-_BN_AVAILABLE = _is_binary_ninja()
 if _BN_AVAILABLE:
     try:
         bn_mainthread = importlib.import_module("binaryninja.mainthread")
@@ -43,7 +40,7 @@ def _log(msg: str) -> None:
             return
         log_trace(msg)
     except ImportError:
-        pass
+        return  # logging module unavailable during early bootstrap — skip silently
 
 
 def idasync(func: F) -> F:

@@ -25,15 +25,16 @@ _ida_kernwin = None
 try:
     _idaapi = importlib.import_module("idaapi")
     _HOST = HOST_IDA
-    # Cache frequently-used IDA modules to avoid repeated importlib lookups
+    # Cache frequently-used IDA modules to avoid repeated importlib lookups.
+    # Both are optional — headless/batch IDA may not expose them.
     try:
         _idc = importlib.import_module("idc")
     except ImportError:
-        pass
+        _idc = None  # optional — absent in some IDA headless configurations
     try:
         _ida_kernwin = importlib.import_module("ida_kernwin")
     except ImportError:
-        pass
+        _ida_kernwin = None  # optional — absent in some IDA headless configurations
 except Exception:
     try:
         importlib.import_module("binaryninja")
@@ -238,7 +239,7 @@ def get_database_instance_id() -> str:
             if node == idaapi.BADNODE:
                 return ""
             val = node.supstr(0)
-            return val if val else ""
+            return val if isinstance(val, str) and val else ""
         except Exception:
             return ""
 

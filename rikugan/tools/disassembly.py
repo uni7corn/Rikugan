@@ -8,12 +8,13 @@ from typing import Annotated, Optional
 from .base import parse_addr, tool
 
 
+ida_funcs = idautils = idc = None  # populated below when IDA is available
 try:
     ida_funcs = importlib.import_module("ida_funcs")
     idautils = importlib.import_module("idautils")
     idc = importlib.import_module("idc")
 except ImportError:
-    pass
+    ida_funcs = idautils = idc = None  # IDA not present — tools unavailable in non-IDA context
 
 
 

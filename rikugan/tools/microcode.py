@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
+from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
 from ..core.errors import ToolError
 from ..core.logging import log_debug
 from .base import parse_addr, tool
@@ -29,12 +30,11 @@ from .microcode_optim import (
     NopOptimizer, DynamicInsnOptimizer, DynamicBlockOptimizer,
 )
 
-_HAS_HEXRAYS = False
+ida_hexrays = ida_funcs = ida_range = None
 try:
     ida_hexrays = importlib.import_module("ida_hexrays")
     ida_funcs = importlib.import_module("ida_funcs")
     ida_range = importlib.import_module("ida_range")
-    _HAS_HEXRAYS = True
 except ImportError as e:
     log_debug(f"IDA modules not available: {e}")
 

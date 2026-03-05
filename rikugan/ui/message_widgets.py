@@ -324,7 +324,7 @@ class ThinkingWidget(QFrame):
             self._timer.stop()
             self._timer.timeout.disconnect(self._tick)
         except (RuntimeError, TypeError):
-            pass
+            return  # timer already stopped or signal already disconnected — harmless
 
 
 # ---------------------------------------------------------------------------
