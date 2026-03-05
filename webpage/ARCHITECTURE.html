@@ -462,7 +462,7 @@ td code{font-size:.82rem}
   <div class="hero-badges">
     <span class="badge"><span class="dot purple"></span>Generator-based Loop</span>
     <span class="badge"><span class="dot pink"></span>4-Phase Exploration</span>
-    <span class="badge"><span class="dot green"></span>56+ Tools</span>
+    <span class="badge"><span class="dot green"></span>63+ Tools</span>
     <span class="badge"><span class="dot orange"></span>12 Skills</span>
     <span class="badge"><span class="dot blue"></span>5 Providers</span>
   </div>
@@ -511,7 +511,7 @@ td code{font-size:.82rem}
 
   <div class="arch-box">
     <div class="arch-item"><div class="ai">&#x1F9E0;</div><div class="at">Agent Loop</div><div class="ad">Generator yields TurnEvents, handles tool calls, manages state</div></div>
-    <div class="arch-item"><div class="ai">&#x1F527;</div><div class="at">56+ Tools</div><div class="ad">Navigation, decompiler, xrefs, annotations, scripting</div></div>
+    <div class="arch-item"><div class="ai">&#x1F527;</div><div class="at">63+ Tools</div><div class="ad">Navigation, decompiler, xrefs, annotations, scripting</div></div>
     <div class="arch-item"><div class="ai">&#x1F3AF;</div><div class="at">12 Skills</div><div class="ad">Malware, CTF, vuln audit, scripting, patching</div></div>
     <div class="arch-item"><div class="ai">&#x1F504;</div><div class="at">5 Providers</div><div class="ad">Anthropic, OpenAI, Gemini, Ollama, Custom</div></div>
     <div class="arch-item"><div class="ai">&#x1F50D;</div><div class="at">Exploration Mode</div><div class="ad">4-phase autonomous binary modification</div></div>
@@ -736,7 +736,7 @@ class ToolDefinition:
       <tr><td>Types</td><td><code>create_struct</code>, <code>modify_struct</code>, <code>set_function_prototype</code></td></tr>
       <tr><td>Scripting</td><td><code>execute_python</code> (requires approval)</td></tr>
       <tr><td>Microcode <span style="color:var(--text-dim)">(IDA)</span></td><td><code>get_microcode</code>, <code>nop_microcode</code></td></tr>
-      <tr><td>IL <span style="color:var(--text-dim)">(BN)</span></td><td><code>get_il</code>, <code>nop_instructions</code></td></tr>
+      <tr><td>IL <span style="color:var(--text-dim)">(BN)</span></td><td><code>get_il</code>, <code>get_cfg</code>, <code>il_replace_expr</code>, <code>il_set_condition</code>, <code>nop_instructions</code>, <code>patch_branch</code></td></tr>
     </table>
   </div>
 

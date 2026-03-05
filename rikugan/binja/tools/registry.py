@@ -9,13 +9,13 @@ from ...tools.registry import ToolRegistry
 from . import (
     navigation, functions, strings, database,
     disassembly, decompiler, xrefs, annotations,
-    types_tools, scripting, il,
+    types_tools, scripting, il, il_analysis, il_transform,
 )
 
 _TOOL_MODULES = (
     navigation, functions, strings, database,
     disassembly, decompiler, xrefs, annotations,
-    types_tools, scripting, il,
+    types_tools, scripting, il, il_analysis, il_transform,
 )
 
 

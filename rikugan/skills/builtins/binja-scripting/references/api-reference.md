@@ -395,3 +395,66 @@ func.add_tag("Bug", "Buffer overflow here", addr)
 tags = func.get_function_tags()
 tags = func.get_address_tags_at(addr)
 ```
+
+### IL Modification API
+
+**Expression replacement:**
+```python
+# replace_expr(old_expr, new_expr) — swap an IL expression in-place
+il_func.replace_expr(old_expr, new_expr)
+
+# Create replacement expressions
+il_func.const(size, value)           # constant value
+il_func.nop()                        # NOP expression
+il_func.goto(label)                  # unconditional goto
+il_func.if_expr(cond, true_label, false_label)  # conditional
+```
+
+**Copy transformation (rebuild function):**
+```python
+il_func.prepare_to_copy_function(src_func)
+il_func.prepare_to_copy_block(block)
+il_func.append(instr.copy_to(il_func))
+il_func.copy_to(block)
+```
+
+**Finalization (required after any modification):**
+```python
+il_func.finalize()               # finalize IL changes
+il_func.generate_ssa_form()      # regenerate SSA
+```
+
+**Workflow and Activity API:**
+```python
+from binaryninja import Workflow, Activity
+
+# Clone the default analysis workflow
+workflow = Workflow("core.function.metaAnalysis").clone("CustomName")
+
+# Create an activity wrapping a transform function
+# Transform signature: def transform(analysis_context): ...
+activity = Activity("activity.name", action=transform_fn)
+
+# Register and insert into pipeline
+workflow.register_activity(activity)
+workflow.insert_after("core.function.generateMediumLevelIL", "activity.name")
+# or: workflow.insert_before(...)
+workflow.register()
+```
+
+**AnalysisContext (available in workflow activities):**
+```python
+def my_transform(analysis_context):
+    func = analysis_context.function
+    llil = analysis_context.llil       # LowLevelILFunction
+    mlil = analysis_context.mlil       # MediumLevelILFunction (if available)
+    # Modify IL, then:
+    llil.finalize()
+    llil.generate_ssa_form()
+```
+
+**Pipeline stages:**
+- `core.function.translateTailCalls`
+- `core.function.generateLowLevelIL`
+- `core.function.generateMediumLevelIL`
+- `core.function.generateHighLevelIL`

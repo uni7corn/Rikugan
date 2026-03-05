@@ -20,7 +20,9 @@ from ..core.types import Message, Role
 from .plan_view import PlanView
 
 # Collapse consecutive tool runs once they reach this many calls.
-_TOOL_GROUP_MIN_CALLS = 1
+# A single tool call is shown inline with its name visible;
+# only 2+ consecutive calls get grouped into a collapsible widget.
+_TOOL_GROUP_MIN_CALLS = 2
 
 
 def _is_hidden_system_user_message(content: str) -> bool:

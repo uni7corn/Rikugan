@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Annotated, Any, Dict, List
+from typing import Annotated, Any
 
 from ...core.logging import log_debug
 from ...tools.base import tool
@@ -33,18 +32,6 @@ _IL_LEVELS = {
     "MMAT_GLBOPT3": "mlil",
     "MMAT_LVARS": "hlil",
 }
-
-
-@dataclass
-class _OptimizerSpec:
-    name: str
-    description: str
-    optimizer_type: str
-    python_code: str
-    optimize_fn: Any
-
-
-installed_optimizers: Dict[str, _OptimizerSpec] = {}
 
 
 def _parse_level(value: str) -> str:
@@ -125,15 +112,6 @@ def _patch_nop(bv: Any, ea: int) -> bool:
             log_debug(f"_patch_nop bv.write failed at 0x{ea:x}: {e}")
             return False
     return False
-
-
-def _compile_optimizer(name: str, code: str):
-    ns = {"__builtins__": __builtins__}
-    exec(code, ns)  # noqa: S102 - explicit user-authored optimizer scripts
-    opt = ns.get("optimize")
-    if not callable(opt):
-        raise ValueError("python_code must define an optimize function")
-    return opt
 
 
 @tool(category="il", requires_decompiler=True)
@@ -218,7 +196,6 @@ def nop_instructions(
         "Comma-separated hex addresses of instructions to NOP "
         "(e.g. '0x401004,0x401008,0x40100c')"
     ],
-    optimizer_name: Annotated[str, "Name for this NOP rule (for later removal)"] = "",
 ) -> str:
     """Patch selected instructions to NOP bytes and update analysis."""
     bv = require_bv()
@@ -244,78 +221,12 @@ def nop_instructions(
         else:
             failed.append(raw)
 
-    update_analysis_and_wait(bv)
+    update_analysis_and_wait(bv, func)
 
-    name = optimizer_name or f"nop_{int(getattr(func, 'start', ea)):x}_{len(installed_optimizers)}"
     summary = f"Patched {patched}/{len(raw_addrs)} instruction(s) with NOP."
     if failed:
         summary += f" Failed: {', '.join(failed)}."
     return summary
-
-
-@tool(category="il", requires_decompiler=True, mutating=True)
-def install_il_optimizer(
-    name: Annotated[str, "Unique name for this optimizer (used to remove it later)"],
-    description: Annotated[str, "What this optimizer does (for list_il_optimizers)"],
-    optimizer_type: Annotated[
-        str,
-        "Type: 'instruction' (called per-instruction) or 'block' (called per-block)"
-    ],
-    python_code: Annotated[
-        str,
-        "Python code defining an 'optimize' function. "
-        "For instruction type: def optimize(blk, ins) -> int. "
-        "For block type: def optimize(blk) -> int. "
-        "Return the number of changes made (0 = no change)."
-    ],
-) -> str:
-    """Register a custom optimizer script."""
-    if name in installed_optimizers:
-        return f"Optimizer '{name}' already exists. Remove it first with remove_il_optimizer."
-
-    opt_type = optimizer_type.strip().lower()
-    if opt_type not in ("instruction", "block"):
-        return "optimizer_type must be 'instruction' or 'block'."
-
-    try:
-        optimize_fn = _compile_optimizer(name, python_code)
-    except Exception as e:
-        return f"Failed to compile optimizer code: {e}"
-
-    installed_optimizers[name] = _OptimizerSpec(
-        name=name,
-        description=description,
-        optimizer_type=opt_type,
-        python_code=python_code,
-        optimize_fn=optimize_fn,
-    )
-    return (
-        f"Optimizer '{name}' ({opt_type}) installed successfully.\n"
-        f"Description: {description}"
-    )
-
-
-@tool(category="il", requires_decompiler=True, mutating=True)
-def remove_il_optimizer(
-    name: Annotated[str, "Name of the optimizer to remove"],
-) -> str:
-    """Remove a previously installed optimizer script."""
-    if name not in installed_optimizers:
-        available = list(installed_optimizers.keys()) or ["(none)"]
-        return f"No optimizer named '{name}'. Active optimizers: {', '.join(available)}"
-    installed_optimizers.pop(name, None)
-    return f"Optimizer '{name}' removed."
-
-
-@tool(category="il", requires_decompiler=True)
-def list_il_optimizers() -> str:
-    """List all currently installed optimizer scripts."""
-    if not installed_optimizers:
-        return "No IL optimizers installed."
-    lines = [f"Installed optimizers ({len(installed_optimizers)}):"]
-    for opt_name, opt in installed_optimizers.items():
-        lines.append(f"  {opt_name} [{opt.optimizer_type}] \u2014 {opt.description}")
-    return "\n".join(lines)
 
 
 @tool(category="il", requires_decompiler=True)
@@ -329,18 +240,13 @@ def redecompile_function(
     if func is None:
         return f"No function at 0x{ea:x}"
 
-    update_analysis_and_wait(bv)
+    update_analysis_and_wait(bv, func)
     start = int(getattr(func, "start", ea))
     pseudocode = get_pseudocode(f"0x{start:x}", with_line_numbers=False)
-    active = list(installed_optimizers.keys())
-    status = f"Active optimizers: {', '.join(active)}" if active else "No optimizers active"
-    return f"=== Redecompiled {get_function_name(func)} ===\n{status}\n\n{pseudocode}"
+    return f"=== Redecompiled {get_function_name(func)} ===\n\n{pseudocode}"
 
 
 # Backward-compat aliases
 get_microcode = get_il
 get_microcode_block = get_il_block
 nop_microcode = nop_instructions
-install_microcode_optimizer = install_il_optimizer
-remove_microcode_optimizer = remove_il_optimizer
-list_microcode_optimizers = list_il_optimizers

@@ -274,7 +274,9 @@ Each host provides ~56 tools organized by category:
 | Types | `create_struct`, `modify_struct`, `set_function_prototype` |
 | Scripting | `execute_python` (requires approval) |
 | Microcode (IDA) | `get_microcode`, `nop_microcode` |
-| IL (BN) | `get_il`, `nop_instructions` |
+| IL (BN) | `get_il`, `get_il_block`, `nop_instructions`, `redecompile_function` |
+| IL Analysis (BN) | `get_cfg`, `track_variable_ssa` |
+| IL Transform (BN) | `il_replace_expr`, `il_set_condition`, `il_nop_expr`, `il_remove_block`, `patch_branch`, `write_bytes`, `install_il_workflow` |
 
 ---
 
@@ -334,7 +336,7 @@ name: Malware Analysis
 description: Windows PE malware analysis workflow
 tags: [malware, windows]
 allowed_tools: [decompile_function, list_imports, search_strings]
-mode: exploration   # optional: activates exploration mode
+mode: exploration   # optional: exploration, plan
 ---
 Task: Analyze this binary as potential malware.
 
@@ -350,7 +352,7 @@ Task: Analyze this binary as potential malware.
 | `description` | str | One-line description |
 | `tags` | list | Categorization tags |
 | `allowed_tools` | list | Tool whitelist (empty = all tools) |
-| `mode` | str | `"exploration"` activates exploration mode |
+| `mode` | str | `"exploration"` activates exploration mode, `"plan"` activates plan mode |
 
 ### Discovery
 

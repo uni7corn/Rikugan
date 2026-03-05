@@ -43,6 +43,17 @@ _PLAN_GENERATION_PROMPT = (
     "3. Rename variables based on analysis\n"
 )
 
+_SKILL_PLAN_GENERATION_PROMPT = (
+    "You are in PLAN MODE, triggered by the /{skill_name} skill.\n"
+    "The skill's methodology is your framework — follow its phases and "
+    "recommended tools as the basis for your plan.\n\n"
+    "Skill guidance:\n{skill_body}\n\n"
+    "Analyze the user's request within this skill's framework and create a "
+    "numbered step-by-step plan. Output ONLY the plan as a numbered list, "
+    "one step per line. Do NOT execute any tools. Do NOT include commentary "
+    "before or after the plan."
+)
+
 _STEP_EXECUTION_PROMPT = (
     "You are executing step {index} of a plan.\n"
     "Step: {description}\n\n"
@@ -977,10 +988,17 @@ class AgentLoop:
         user_message: str,
         system_prompt: str,
         tools_schema: List,
+        active_skill: Optional[Any] = None,
     ) -> Generator[TurnEvent, None, None]:
         """Run the agent in plan mode: generate plan, get approval, execute steps."""
         # Phase 1: Generate plan (text-only)
-        plan_prompt = _PLAN_GENERATION_PROMPT + f"\n\nUser request: {user_message}"
+        if active_skill:
+            plan_prompt = _SKILL_PLAN_GENERATION_PROMPT.format(
+                skill_name=active_skill.slug,
+                skill_body=active_skill.body,
+            ) + f"\n\nUser request: {user_message}"
+        else:
+            plan_prompt = _PLAN_GENERATION_PROMPT + f"\n\nUser request: {user_message}"
         plan_msg = Message(role=Role.USER, content=plan_prompt)
         self.session.add_message(plan_msg)
 
@@ -1603,7 +1621,16 @@ class AgentLoop:
 
         tools_schema.append(_SPAWN_SUBAGENT_SCHEMA)
         tools_schema.append(_ASK_USER_SCHEMA)
-        return tools_schema
+
+        # Deduplicate — Anthropic rejects requests with duplicate tool names
+        seen: set = set()
+        deduped: list = []
+        for t in tools_schema:
+            name = t.get("function", t).get("name", "")
+            if name and name not in seen:
+                seen.add(name)
+                deduped.append(t)
+        return deduped
 
     def _run_normal_loop(
         self, system_prompt: str, tools_schema: list,
@@ -1725,6 +1752,8 @@ class AgentLoop:
             user_message, active_skill = self._resolve_skill(user_message)
             if active_skill and active_skill.mode == "exploration":
                 use_exploration_mode = True
+            elif active_skill and active_skill.mode == "plan":
+                use_plan_mode = True
 
             self.session.add_message(Message(role=Role.USER, content=user_message))
             system_prompt = minify_text(self._build_system_prompt())
@@ -1738,7 +1767,7 @@ class AgentLoop:
                 return
 
             if use_plan_mode or self.plan_mode:
-                yield from self._run_plan_mode(user_message, system_prompt, tools_schema)
+                yield from self._run_plan_mode(user_message, system_prompt, tools_schema, active_skill=active_skill)
                 return
 
             yield from self._run_normal_loop(system_prompt, tools_schema)

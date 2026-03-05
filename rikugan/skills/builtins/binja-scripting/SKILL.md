@@ -167,6 +167,60 @@ class MyTask(BackgroundTaskThread):
             self.progress = f"{func.name} ({i}/{len(self.bv.functions)})"
 ```
 
+## IL Modification
+
+Binary Ninja supports IL-level modifications through its workflow system and `replace_expr` API.
+
+### Expression Replacement
+```python
+# Replace an IL expression with a new one
+# Works at LLIL and MLIL levels
+il_func = analysis_context.llil  # or .mlil
+expr = il_func[index]
+new_expr = il_func.const(expr.size, value)
+il_func.replace_expr(expr, new_expr)
+il_func.finalize()
+il_func.generate_ssa_form()
+```
+
+### Copy Transformation
+```python
+# Rebuild a function with structural changes (block reordering, removal)
+il_func.prepare_to_copy_function(src_func)
+for block in src_blocks:
+    il_func.prepare_to_copy_block(block)
+    for instr in block:
+        il_func.append(instr.copy_to(il_func))
+    il_func.copy_to(block)
+il_func.finalize()
+il_func.generate_ssa_form()
+```
+
+### Workflow Registration
+```python
+# Register a transform at a specific pipeline stage
+from binaryninja import Workflow, Activity
+
+workflow = Workflow("core.function.metaAnalysis").clone("MyWorkflow")
+activity = Activity("myTransform", action=my_transform_func)
+workflow.register_activity(activity)
+workflow.insert_after("core.function.generateMediumLevelIL", "myTransform")
+workflow.register()
+```
+
+### Pipeline Insertion Points
+- Before `core.function.generateMediumLevelIL` — modify LLIL before MLIL generation
+- After `core.function.generateMediumLevelIL` — modify MLIL after generation
+- Must access IL through `AnalysisContext` during workflow activities
+- Always call `finalize()` + `generate_ssa_form()` after modifications
+
+### Label/GOTO for Control Flow
+```python
+# Create labels for control flow changes
+label = il_func.get_label_for_address(il_func.arch, target_addr)
+il_func.append(il_func.goto(label))
+```
+
 ## Important Notes
 
 - `func.hlil_if_available` returns `None` if HLIL hasn't been generated yet — safer than `func.hlil` which may block.

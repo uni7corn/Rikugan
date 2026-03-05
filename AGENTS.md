@@ -52,7 +52,9 @@ rikugan/
 │   │   ├── xrefs.py          # Cross-reference tools
 │   │   ├── annotations.py    # Rename/comment/set_type tools
 │   │   ├── types_tools.py    # Struct/enum/typedef tools
-│   │   ├── il.py             # IL tools (get_il, nop_instructions, IL optimizers)
+│   │   ├── il.py             # IL core tools (get_il, get_il_block, nop_instructions, redecompile_function)
+│   │   ├── il_analysis.py    # IL analysis tools (get_cfg, track_variable_ssa)
+│   │   ├── il_transform.py   # IL transform tools (il_replace_expr, il_set_condition, il_nop_expr, patch_branch, etc.)
 │   │   └── scripting.py      # execute_python tool
 │   └── ui/
 │       ├── panel.py          # BN QWidget panel
@@ -219,7 +221,7 @@ The `@tool` decorator:
 - Attaches the definition as `func._tool_definition`
 
 Optional `@tool` parameters:
-- `category` — grouping (e.g., `"navigation"`, `"decompiler"`, `"microcode"`, `"il"`)
+- `category` — grouping (e.g., `"navigation"`, `"decompiler"`, `"il"`)
 - `requires_decompiler` — marks the tool as needing decompiler/Hex-Rays availability
 - `mutating` — marks the tool as modifying the database (used for `execute_python` approval)
 

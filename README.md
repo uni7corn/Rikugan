@@ -1,6 +1,6 @@
 # Rikugan (六眼)
 
-A reverse-engineering agent for **IDA Pro** and **Binary Ninja** that integrates a multi-provider LLM directly into your analysis UI. This project was built together with my friend, Claude Code.
+A reverse-engineering agent for **IDA Pro** and **Binary Ninja** that integrates a multi-provider LLM directly into your analysis UI. This project was vibecoded together with my friend, Claude Code.
 
 
 ![alt text](assets/binja_showcase.png)
@@ -31,14 +31,14 @@ Also, building agents is a fascinating area of study, especially when coding alo
 
 ## Features
 
-There are 50+ tools available to the agent, covering:
+There are 60+ tools available to the agent, covering:
 
 - Navigation
 - Code reading (decompiler, disassembly)
 - Cross-references
 - Strings (list, filter)
 - Annotations (retype, rename, comments)
-- IL reading/writing (Binary Ninja's LLIL/MLIL/HLIL) — Experimental
+- IL reading/writing (Binary Ninja's LLIL/MLIL/HLIL) — read IL at any level, modify expressions, force branches, NOP instructions, patch bytes, register pipeline transforms
 - Scripting to extend its capabilities (Binary Ninja Python and IDAPython)
 
 Tool details can be found in the [ARCHITECTURE.md](ARCHITECTURE.md) document. You can use these tools to do things like:
@@ -90,10 +90,6 @@ We know that agentic coding is excellent in reading and editing code, so why not
 
 And that's it. Rikugan will start exploration mode, understand the binary's full context, and systematically apply the necessary patches to achieve your goal. Of course, this can produce issues (segfaults, crashes), but you can feed those back and it will attempt to fix them. 
 
-This is literally ***vibe modding*** (or agentic modding for the ones who has shame to use the word "vibe").
-
-
-
 |![alt text](assets/modify_example_02.png)|
 |:--:|
 |Discovered a function purpose|
@@ -117,6 +113,22 @@ Done
 Rikugan is inspired by how Claude Code maintains its memory. Every important finding during a session is saved to `RIKUGAN.md` — a running synthesis of what was discovered across analysis sessions.
 
 ![alt text](assets/memory.png)
+
+### Deobfuscation (Binary Ninja)
+
+The `/deobfuscation` skill gives the agent a structured methodology for cleaning obfuscated binaries. It activates plan mode — the agent reads the IL, understands what the obfuscation is doing, and uses IL write primitives to undo it.
+
+The agent has full IL read/write access:
+- **Read**: `get_il` (any level), `get_cfg` (blocks, edges, dominators, loops), `track_variable_ssa` (def-use chains)
+- **Write**: `il_replace_expr` (swap expressions), `il_set_condition` (force branches), `il_nop_expr` (NOP expressions), `il_remove_block` (kill dead blocks), `patch_branch` / `write_bytes` (byte-level fallback), `install_il_workflow` (register pipeline transforms for batch processing)
+
+The skill teaches the agent how to recognize and remove:
+- **Control Flow Flattening (CFF)** — dispatcher loops with state variables, including -O0 memory-store patterns
+- **Opaque Predicates** — always-true/false conditions (algebraic and call-based)
+- **Mixed Boolean-Arithmetic (MBA)** — complex expressions that simplify to trivial operations
+- **Junk Code / Dead Stores** — instructions that compute values never used
+
+The agent is the deobfuscator. The tools are its hands — it reads, understands, modifies, and verifies.
 
 ## Requirements
 
@@ -303,7 +315,7 @@ MCP servers are started when the plugin loads. Their tools appear alongside buil
 
 ## Tools
 
-56 tools per host, organized by category. 50 tools are shared across both hosts with identical interfaces. Each host adds 6 host-specific tools for its native intermediate representation.
+50 tools are shared across both hosts with identical interfaces. IDA adds 6 host-specific microcode tools; Binary Ninja adds 13 host-specific IL tools for reading, analyzing, and transforming its intermediate language.
 
 ### Shared tools (50)
 
@@ -328,13 +340,15 @@ MCP servers are started when the plugin loads. Their tools appear alongside buil
 
 Uses Hex-Rays MMAT maturity levels. Includes `redecompile_function` to refresh output after microcode patches.
 
-### Binary Ninja-only tools (6)
+### Binary Ninja-only tools (13)
 
 | Category | Tools |
 |----------|-------|
-| **IL** | `get_il` `get_il_block` `nop_instructions` `install_il_optimizer` `remove_il_optimizer` `list_il_optimizers` |
+| **IL Core** | `get_il` `get_il_block` `nop_instructions` `redecompile_function` |
+| **IL Analysis** | `get_cfg` `track_variable_ssa` |
+| **IL Transform** | `il_replace_expr` `il_set_condition` `il_nop_expr` `il_remove_block` `patch_branch` `write_bytes` `install_il_workflow` |
 
-Uses native IL levels (`llil`, `mlil`, `hlil`). Includes `redecompile_function` to refresh output after IL patches.
+Read IL at any level (LLIL, MLIL, HLIL), inspect CFG structure and SSA def-use chains, then modify: replace expressions, force conditions, NOP instructions, remove blocks, patch branches at byte level, or register custom Python transforms in the analysis pipeline.
 
 
 ## Recommended Providers

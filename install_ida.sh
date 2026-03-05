@@ -131,21 +131,18 @@ mkdir -p "$CONFIG_DIR"
 SKILLS_DIR="$CONFIG_DIR/skills"
 BUILTINS_SRC="$SCRIPT_DIR/rikugan/skills/builtins"
 
-if [[ -d "$BUILTINS_SRC" ]]; then
-    info "Installing built-in skills into $SKILLS_DIR..."
-    mkdir -p "$SKILLS_DIR"
+# Built-in skills are loaded directly from rikugan/skills/builtins/ (via symlink).
+# The user skills directory is for user-created skills only.
+# Remove stale built-in copies that previous installs may have placed here.
+if [[ -d "$BUILTINS_SRC" ]] && [[ -d "$SKILLS_DIR" ]]; then
     for skill in "$BUILTINS_SRC"/*/; do
         slug="$(basename "$skill")"
         dst="$SKILLS_DIR/$slug"
         if [[ -d "$dst" ]]; then
-            ok "/$slug already exists, skipping (user copy preserved)"
-        else
-            cp -R "$skill" "$dst"
-            ok "/$slug"
+            rm -rf "$dst"
+            info "Removed stale built-in copy: /$slug"
         fi
     done
-else
-    warn "Built-in skills not found at $BUILTINS_SRC, skipping"
 fi
 
 # ── Install plugin via symlinks ───────────────────────────────────────

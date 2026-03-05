@@ -413,7 +413,15 @@ def define_user_type(bv: Any, name: str, t: Any) -> bool:
     return False
 
 
-def update_analysis_and_wait(bv: Any) -> None:
+def update_analysis_and_wait(bv: Any, func: Any = None) -> None:
+    # Force reanalysis of a specific function first (triggers redecompilation)
+    if func is not None:
+        reanalyze = getattr(func, "reanalyze", None)
+        if callable(reanalyze):
+            try:
+                reanalyze()
+            except Exception as e:
+                log_debug(f"func.reanalyze() failed: {e}")
     for name in ("update_analysis_and_wait", "updateAnalysisAndWait"):
         meth = getattr(bv, name, None)
         if callable(meth):

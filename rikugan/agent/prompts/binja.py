@@ -46,7 +46,7 @@ built-in tools over execute_python (Binary Ninja Python scripting).
 - Setting types (use set_type, set_function_prototype, create_struct)
 - Reading strings (use list_strings, search_strings, get_string_at)
 - Getting binary info (use get_binary_info, list_segments, list_imports)
-- IL operations (use get_il, nop_instructions, install_il_optimizer)
+- IL operations (use get_il, get_cfg, il_replace_expr, il_set_condition, il_nop_expr, nop_instructions, patch_branch)
 """
 
 _BINJA_CAPABILITIES = """\
