@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -35,6 +36,64 @@ from ..state.session import SessionState
 
 # Minimum acceptable context window; smaller values get flagged by /doctor.
 _MIN_CONTEXT_WINDOW_TOKENS = 8_000
+
+_MEMORY_HEADER = (
+    "# Rikugan Persistent Memory\n\n"
+    "This file persists across sessions. "
+    "The agent reads the first 200 lines into its system prompt.\n\n"
+)
+
+
+@dataclasses.dataclass
+class _ParsedCommand:
+    """Result of parsing a user message for slash-command prefixes."""
+    message: str
+    use_plan_mode: bool = False
+    use_exploration_mode: bool = False
+    explore_only: bool = False
+    direct_command: str = ""  # e.g. "/memory", "/undo", "/mcp", "/doctor"
+    direct_arg: str = ""      # remainder after the direct command token
+
+
+def _parse_user_command(user_message: str) -> _ParsedCommand:
+    """Strip slash-command prefixes and return a _ParsedCommand descriptor.
+
+    Direct commands (/memory, /undo, /mcp, /doctor) set `direct_command`.
+    Mode prefixes (/plan, /modify, /explore) set the corresponding flag and
+    strip the prefix from `message`.  Plain messages are returned unchanged.
+    """
+    stripped = user_message.strip()
+    lower = stripped.lower()
+    if lower.startswith("/plan "):
+        return _ParsedCommand(message=stripped[6:].strip(), use_plan_mode=True)
+    if lower.startswith("/modify "):
+        return _ParsedCommand(message=stripped[8:].strip(), use_exploration_mode=True)
+    if lower.startswith("/explore "):
+        return _ParsedCommand(
+            message=stripped[9:].strip(),
+            use_exploration_mode=True,
+            explore_only=True,
+        )
+    if lower == "/memory":
+        return _ParsedCommand(message=stripped, direct_command="/memory")
+    if lower.startswith("/undo"):
+        return _ParsedCommand(
+            message=stripped, direct_command="/undo", direct_arg=stripped,
+        )
+    if lower == "/mcp":
+        return _ParsedCommand(message=stripped, direct_command="/mcp")
+    if lower == "/doctor":
+        return _ParsedCommand(message=stripped, direct_command="/doctor")
+    return _ParsedCommand(message=stripped)
+
+
+def _append_to_memory_file(md_path: str, content: str) -> None:
+    """Create RIKUGAN.md with header if missing, then append *content*."""
+    if not os.path.exists(md_path):
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(_MEMORY_HEADER)
+    with open(md_path, "a", encoding="utf-8") as f:
+        f.write(content)
 
 _PLAN_GENERATION_PROMPT = (
     "You are in PLAN MODE. Analyze the user's request and create a numbered "
@@ -535,26 +594,7 @@ class AgentLoop:
             tool_msg = Message(role=Role.TOOL, tool_results=tool_results)
             self.session.add_message(tool_msg)
 
-            if self._consecutive_errors >= 5:
-                self._tools_disabled_for_turn = True
-                self._consecutive_errors = 0
-                hint = Message(
-                    role=Role.USER,
-                    content=(
-                        "[SYSTEM] You have failed 5 consecutive tool calls. "
-                        "Tools are temporarily disabled. Explain what went wrong."
-                    ),
-                )
-                self.session.add_message(hint)
-            elif self._consecutive_errors >= 3:
-                hint = Message(
-                    role=Role.USER,
-                    content=(
-                        "[SYSTEM] You have failed 3 consecutive tool calls. "
-                        "Try a different strategy or explain what is failing."
-                    ),
-                )
-                self.session.add_message(hint)
+            self._maybe_inject_error_hint()
 
             yield TurnEvent.turn_end(state.total_turns)
 
@@ -808,20 +848,11 @@ class AgentLoop:
 
         md_path = os.path.join(idb_dir, "RIKUGAN.md")
         try:
-            if not os.path.exists(md_path):
-                with open(md_path, "w", encoding="utf-8") as f:
-                    f.write(
-                        "# Rikugan Persistent Memory\n\n"
-                        "This file persists across sessions. "
-                        "The agent reads the first 200 lines into its system prompt.\n\n"
-                    )
-            with open(md_path, "a", encoding="utf-8") as f:
-                timestamp = time.strftime("%Y-%m-%d %H:%M")
-                f.write(f"\n## Plan ({timestamp})\n")
-                f.write(f"Goal: {user_goal[:200]}\n")
-                for i, step in enumerate(steps, 1):
-                    f.write(f"{i}. {step}\n")
-                f.write("\n")
+            timestamp = time.strftime("%Y-%m-%d %H:%M")
+            lines = [f"\n## Plan ({timestamp})\n", f"Goal: {user_goal[:200]}\n"]
+            lines += [f"{i}. {step}\n" for i, step in enumerate(steps, 1)]
+            lines.append("\n")
+            _append_to_memory_file(md_path, "".join(lines))
             log_info(f"Plan persisted to RIKUGAN.md ({len(steps)} steps)")
         except OSError as e:
             log_error(f"Failed to persist plan to RIKUGAN.md: {e}")
@@ -1064,11 +1095,17 @@ class AgentLoop:
             try:
                 result = yield from self._stream_llm_turn_inner(system_prompt, tools_schema)
                 return result
-            except (RateLimitError,) as e:
+            except (RateLimitError, ProviderError) as e:
+                is_rate_limit = isinstance(e, RateLimitError)
+                if not is_rate_limit and not (e.retryable and attempt < max_retries - 1):
+                    raise
                 last_error = e
                 log_error(f"Retryable error (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    backoff = e.retry_after if e.retry_after > 0 else min(2 ** attempt, 10)
+                    if is_rate_limit:
+                        backoff = e.retry_after if e.retry_after > 0 else min(2 ** attempt, 10)
+                    else:
+                        backoff = min(2 ** attempt, 10)
                     yield TurnEvent.error_event(
                         f"{self._format_provider_error_for_user(e)} "
                         f"Retrying in {backoff:.0f}s (attempt {attempt + 2}/{max_retries})."
@@ -1078,24 +1115,33 @@ class AgentLoop:
                         self._check_cancelled()
                         time.sleep(min(0.5, deadline - time.monotonic()))
                 continue
-            except ProviderError as e:
-                if e.retryable and attempt < max_retries - 1:
-                    last_error = e
-                    log_error(f"Retryable provider error (attempt {attempt + 1}/{max_retries}): {e}")
-                    backoff = min(2 ** attempt, 10)
-                    yield TurnEvent.error_event(
-                        f"{self._format_provider_error_for_user(e)} "
-                        f"Retrying in {backoff:.0f}s (attempt {attempt + 2}/{max_retries})."
-                    )
-                    deadline = time.monotonic() + backoff
-                    while time.monotonic() < deadline:
-                        self._check_cancelled()
-                        time.sleep(min(0.5, deadline - time.monotonic()))
-                    continue
-                raise
 
         # All retries exhausted
         raise last_error  # type: ignore[misc]
+
+    def _maybe_inject_error_hint(self) -> None:
+        """Inject a system hint when consecutive tool errors exceed thresholds."""
+        if self._consecutive_errors >= 5:
+            self._tools_disabled_for_turn = True
+            self._consecutive_errors = 0
+            self.session.add_message(Message(
+                role=Role.USER,
+                content=(
+                    "[SYSTEM] You have failed 5 consecutive tool calls. "
+                    "Tools are temporarily disabled. Explain what went wrong "
+                    "and what you were trying to do. The user may help you. "
+                    "Tools will be re-enabled on your next turn."
+                ),
+            ))
+        elif self._consecutive_errors >= 3:
+            self.session.add_message(Message(
+                role=Role.USER,
+                content=(
+                    "[SYSTEM] You have failed 3 consecutive tool calls. "
+                    "Stop retrying the same approach. Try a different strategy "
+                    "or explain what is failing."
+                ),
+            ))
 
     def _prepare_provider_messages(
         self, system_prompt: str
@@ -1428,15 +1474,7 @@ class AgentLoop:
             else:
                 md_path = os.path.join(idb_dir, "RIKUGAN.md")
                 try:
-                    if not os.path.exists(md_path):
-                        with open(md_path, "w", encoding="utf-8") as f:
-                            f.write(
-                                "# Rikugan Persistent Memory\n\n"
-                                "This file persists across sessions. "
-                                "The agent reads the first 200 lines into its system prompt.\n\n"
-                            )
-                    with open(md_path, "a", encoding="utf-8") as f:
-                        f.write(f"- [{category}] {fact}\n")
+                    _append_to_memory_file(md_path, f"- [{category}] {fact}\n")
                     content = f"Saved to RIKUGAN.md: [{category}] {fact}"
                     is_err = False
                     log_info(f"save_memory: [{category}] {fact[:80]}")
@@ -1695,27 +1733,7 @@ class AgentLoop:
             self.session.add_message(Message(role=Role.TOOL, tool_results=tool_results))
 
             # Consecutive error recovery: hint at 3, disable tools at 5
-            if self._consecutive_errors >= 5:
-                self._tools_disabled_for_turn = True
-                self._consecutive_errors = 0
-                self.session.add_message(Message(
-                    role=Role.USER,
-                    content=(
-                        "[SYSTEM] You have failed 5 consecutive tool calls. "
-                        "Tools are temporarily disabled. Explain what went wrong "
-                        "and what you were trying to do. The user may help you. "
-                        "Tools will be re-enabled on your next turn."
-                    ),
-                ))
-            elif self._consecutive_errors >= 3:
-                self.session.add_message(Message(
-                    role=Role.USER,
-                    content=(
-                        "[SYSTEM] You have failed 3 consecutive tool calls. "
-                        "Stop retrying the same approach. Try a different strategy "
-                        "or explain what is failing."
-                    ),
-                ))
+            self._maybe_inject_error_hint()
 
             log_debug(f"Turn {turn} end ({len(tool_calls)} tool calls)")
             yield TurnEvent.turn_end(turn)
@@ -1731,33 +1749,24 @@ class AgentLoop:
         self.session.is_running = True
 
         try:
-            # Detect command prefixes before skill resolution
-            use_plan_mode = False
-            use_exploration_mode = False
-            explore_only = False
-            stripped = user_message.strip()
-            if stripped.lower().startswith("/plan "):
-                use_plan_mode = True
-                user_message = stripped[6:].strip()
-            elif stripped.lower().startswith("/modify "):
-                use_exploration_mode = True
-                user_message = stripped[8:].strip()
-            elif stripped.lower().startswith("/explore "):
-                use_exploration_mode = True
-                explore_only = True
-                user_message = stripped[9:].strip()
-            elif stripped.lower() == "/memory":
+            cmd = _parse_user_command(user_message)
+            if cmd.direct_command == "/memory":
                 yield from self._handle_memory_command()
                 return
-            elif stripped.lower().startswith("/undo"):
-                yield from self._handle_undo_command(stripped)
+            if cmd.direct_command == "/undo":
+                yield from self._handle_undo_command(cmd.direct_arg)
                 return
-            elif stripped.lower() == "/mcp":
+            if cmd.direct_command == "/mcp":
                 yield from self._handle_mcp_command()
                 return
-            elif stripped.lower() == "/doctor":
+            if cmd.direct_command == "/doctor":
                 yield from self._handle_doctor_command()
                 return
+
+            user_message = cmd.message
+            use_plan_mode = cmd.use_plan_mode
+            use_exploration_mode = cmd.use_exploration_mode
+            explore_only = cmd.explore_only
 
             user_message, active_skill = self._resolve_skill(user_message)
             if active_skill and active_skill.mode == "exploration":

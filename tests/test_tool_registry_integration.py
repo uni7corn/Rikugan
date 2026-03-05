@@ -18,14 +18,15 @@ install_ida_mocks()
 # Hexrays_Hooks, etc.) instead of MagicMock, which would leak fake
 # _tool_definition attributes into the registry.
 import importlib
-import iris.tools.microcode as _mc_mod
-import iris.tools.microcode_optim as _mco_mod
-import iris.tools.database as _db_mod
+import rikugan.tools.microcode as _mc_mod
+import rikugan.tools.microcode_optim as _mco_mod
+import rikugan.tools.database as _db_mod
 importlib.reload(_mco_mod)
 importlib.reload(_mc_mod)
 importlib.reload(_db_mod)
 
-from rikugan.tools.registry import create_default_registry, ToolRegistry
+from rikugan.ida.tools.registry import create_default_registry
+from rikugan.tools.registry import ToolRegistry
 
 
 class TestDefaultRegistryCreation(unittest.TestCase):

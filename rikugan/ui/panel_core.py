@@ -415,7 +415,7 @@ class RikuganPanelCore(QWidget):
         label = self._ctrl.tab_label(new_tab_id)
         chat_view = self._create_tab(new_tab_id, f"{label} (fork)")
         # Restore messages into the forked chat view
-        source_session = self._ctrl._sessions.get(new_tab_id)
+        source_session = self._ctrl.get_session(new_tab_id)
         if source_session and source_session.messages:
             chat_view.restore_from_messages(source_session.messages)
         self._ctrl.switch_tab(new_tab_id)
@@ -441,7 +441,7 @@ class RikuganPanelCore(QWidget):
         tab_id = self._tab_id_at_index(index)
         if tab_id is None:
             return
-        session = self._ctrl._sessions.get(tab_id)
+        session = self._ctrl.get_session(tab_id)
         if session is None or not session.messages:
             return
         label = self._ctrl.tab_label(tab_id).replace("/", "-").replace("\\", "-")

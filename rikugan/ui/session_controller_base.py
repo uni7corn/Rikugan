@@ -202,6 +202,9 @@ class SessionControllerBase:
     def session(self) -> SessionState:
         return self._sessions[self._active_tab_id]
 
+    def get_session(self, tab_id: str) -> Optional[SessionState]:
+        return self._sessions.get(tab_id)
+
     @property
     def provider_registry(self) -> ProviderRegistry:
         return self._provider_registry

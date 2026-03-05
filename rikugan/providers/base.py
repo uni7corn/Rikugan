@@ -96,13 +96,13 @@ class LLMProvider(ABC):
             log_debug(f"{self.name} list_models failed, using builtins: {exc}")
             return self._builtin_models()
 
+    @abstractmethod
     def _format_messages(self, messages: List[Message]) -> Any:
-        """Convert internal messages to provider wire format. Override per provider."""
-        raise NotImplementedError
+        """Convert internal messages to provider wire format."""
 
+    @abstractmethod
     def _normalize_response(self, raw: Any) -> Message:
-        """Convert provider response to internal Message. Override per provider."""
-        raise NotImplementedError
+        """Convert provider response to internal Message."""
 
     def ensure_ready(self) -> None:
         """Pre-initialize the provider (imports, client objects, etc.).

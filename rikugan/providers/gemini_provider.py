@@ -128,6 +128,9 @@ class GeminiProvider(LLMProvider):
             ))
         return [types.Tool(function_declarations=declarations)]
 
+    def _format_messages(self, messages: List[Message]) -> list:
+        return self._build_contents(messages)
+
     def _build_contents(self, messages: List[Message]) -> list:
         """Convert messages to a list of ``types.Content`` objects.
 

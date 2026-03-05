@@ -52,6 +52,12 @@ class MockProvider(LLMProvider):
     def _builtin_models() -> List[ModelInfo]:
         return [ModelInfo(id="mock-model", name="Mock", provider="mock")]
 
+    def _format_messages(self, messages):
+        return messages
+
+    def _normalize_response(self, raw):
+        return raw
+
     def chat(self, messages, tools=None, temperature=0.3, max_tokens=4096, system=""):
         return Message(role=Role.ASSISTANT, content="mock response")
 

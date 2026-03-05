@@ -37,7 +37,5 @@ class RikuganPanel(QWidget):
     def shutdown(self) -> None:
         self._core.shutdown()
 
-    def __getattr__(self, name: str):
-        if hasattr(self._core, name):
-            return getattr(self._core, name)
-        raise AttributeError(name)
+    def on_database_changed(self, new_path: str) -> None:
+        self._core.on_database_changed(new_path)

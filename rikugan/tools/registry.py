@@ -140,11 +140,3 @@ class ToolRegistry:
             return json.dumps(result, indent=2, default=str)
         return str(result)
 
-
-def create_default_registry() -> ToolRegistry:
-    """Create a registry with all built-in IDA tools.
-
-    Backward-compat shim — canonical location is rikugan.ida.tools.registry.
-    """
-    from ..ida.tools.registry import create_default_registry as _create
-    return _create()

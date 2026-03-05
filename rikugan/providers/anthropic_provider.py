@@ -344,10 +344,9 @@ class AnthropicProvider(LLMProvider):
 
         try:
             response = client.messages.create(**kwargs)
+            return self._normalize_response(response)
         except Exception as e:
             self._handle_api_error(e)
-
-        return self._normalize_response(response)
 
     def chat_stream(
         self,
