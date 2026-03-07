@@ -10,37 +10,52 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
-from rikugan.tools.script_guard import BLOCKED_SCRIPT_RE, run_guarded_script
+from rikugan.tools.script_guard import _check_ast, run_guarded_script
 
 
 def _empty_ns():
     return {}
 
 
-class TestBlockedScriptRe(unittest.TestCase):
+class TestCheckAst(unittest.TestCase):
     def test_blocks_subprocess(self):
-        assert BLOCKED_SCRIPT_RE.search("import subprocess") is not None
+        assert _check_ast("import subprocess") is not None
 
     def test_blocks_os_system(self):
-        assert BLOCKED_SCRIPT_RE.search("os.system('ls')") is not None
+        assert _check_ast("os.system('ls')") is not None
 
     def test_blocks_os_popen(self):
-        assert BLOCKED_SCRIPT_RE.search("os.popen('ls')") is not None
-
-    def test_blocks_popen_direct(self):
-        assert BLOCKED_SCRIPT_RE.search("Popen(['ls'])") is not None
+        assert _check_ast("os.popen('ls')") is not None
 
     def test_blocks_import_subprocess_via_dunder(self):
-        assert BLOCKED_SCRIPT_RE.search("__import__('subprocess')") is not None
+        assert _check_ast("__import__('subprocess')") is not None
 
     def test_blocks_os_exec(self):
-        assert BLOCKED_SCRIPT_RE.search("os.execv('/bin/sh', [])") is not None
+        assert _check_ast("os.execv('/bin/sh', [])") is not None
+
+    def test_blocks_os_spawn(self):
+        assert _check_ast("os.spawnl(0, '/bin/sh')") is not None
+
+    def test_blocks_exec_call(self):
+        assert _check_ast("exec('code')") is not None
+
+    def test_blocks_eval_call(self):
+        assert _check_ast("eval('1+1')") is not None
+
+    def test_blocks_from_subprocess_import(self):
+        assert _check_ast("from subprocess import Popen") is not None
+
+    def test_blocks_syntax_error(self):
+        assert _check_ast("def f(:\n    pass") is not None
 
     def test_allows_harmless_code(self):
-        assert BLOCKED_SCRIPT_RE.search("x = 1 + 2") is None
+        assert _check_ast("x = 1 + 2") is None
 
     def test_allows_print(self):
-        assert BLOCKED_SCRIPT_RE.search("print('hello')") is None
+        assert _check_ast("print('hello')") is None
+
+    def test_allows_os_path(self):
+        assert _check_ast("os.path.join('a', 'b')") is None
 
 
 class TestRunGuardedScript(unittest.TestCase):
@@ -88,7 +103,7 @@ class TestRunGuardedScript(unittest.TestCase):
 
     def test_syntax_error_in_code(self):
         result = run_guarded_script("def f(:\n    pass", _empty_ns)
-        assert "Error" in result or "stderr" in result
+        assert "Error" in result
 
     def test_namespace_factory_called_fresh_each_time(self):
         calls = []

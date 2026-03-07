@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Dict, List, Optional
 
 from ..constants import MCP_TOOL_PREFIX
-from ..core.logging import log_debug, log_error, log_info
+from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..tools.registry import ToolRegistry
 from .config import MCPServerConfig, load_mcp_config
 from .client import MCPClient
 from .bridge import register_mcp_tools
+
+# Soft timeout: log a warning if startup takes longer than this.
+_SOFT_TIMEOUT = 5.0
+# Hard timeout: abort startup entirely after this many seconds.
+_HARD_TIMEOUT = 15.0
 
 
 class MCPManager:
@@ -24,6 +30,7 @@ class MCPManager:
         self._configs: List[MCPServerConfig] = []
         self._clients: Dict[str, MCPClient] = {}
         self._lock = threading.Lock()
+        self._shut_down = False
 
     def load_config(self, path: str = "") -> int:
         """Load MCP config. Returns number of enabled servers found."""
@@ -42,6 +49,10 @@ class MCPManager:
         Each server's tools are registered into `registry` as they come online.
         Optional `on_complete(server_name, tool_count)` callback is called per server.
         """
+        if self._shut_down:
+            log_warning("MCP: start_servers called after shutdown — ignoring")
+            return
+
         for config in self._configs:
             if not config.enabled:
                 continue
@@ -60,10 +71,22 @@ class MCPManager:
         registry: ToolRegistry,
         on_complete: Optional[Callable[[str, int], None]],
     ) -> None:
-        """Start a single MCP server (runs in background thread)."""
+        """Start a single MCP server (runs in background thread).
+
+        Uses a soft timeout (_SOFT_TIMEOUT) to emit a warning and a hard
+        timeout (_HARD_TIMEOUT) to abort, preventing indefinite UI freezes.
+        """
+        hard = min(config.timeout, _HARD_TIMEOUT)
         client = MCPClient(config)
+        t0 = time.monotonic()
         try:
-            client.start(timeout=config.timeout)
+            client.start(timeout=hard)
+            elapsed = time.monotonic() - t0
+            if elapsed > _SOFT_TIMEOUT:
+                log_warning(
+                    f"MCP[{config.name}]: startup took {elapsed:.1f}s "
+                    f"(soft limit {_SOFT_TIMEOUT}s)"
+                )
             with self._lock:
                 self._clients[config.name] = client
             count = register_mcp_tools(client, registry)
@@ -90,6 +113,15 @@ class MCPManager:
                 log_error(f"MCP[{client.name}]: stop error: {e}")
 
         log_info("MCP: all servers stopped")
+
+    def shutdown(self) -> None:
+        """Stop all servers and prevent further starts.
+
+        Call this during application shutdown instead of ``stop_all()``
+        to ensure no new servers are started after cleanup.
+        """
+        self._shut_down = True
+        self.stop_all()
 
     def list_servers(self) -> List[str]:
         """List names of connected servers."""

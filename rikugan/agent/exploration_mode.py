@@ -67,12 +67,27 @@ class KnowledgeBase:
     relevant_imports: List[str] = field(default_factory=list)
     findings: List[Finding] = field(default_factory=list)
     hypotheses: List[str] = field(default_factory=list)
+    _seen_addresses: set = field(default_factory=set, repr=False)
 
     def add_finding(self, finding: Finding) -> None:
+        """Add a finding, deduplicating by address.
+
+        If a finding with the same non-None address already exists, the
+        existing entry is updated (merged) rather than appended.
+        """
+        if finding.address is not None and finding.address in self._seen_addresses:
+            # Update existing finding at same address
+            for i, existing in enumerate(self.findings):
+                if existing.address == finding.address and existing.category == finding.category:
+                    self.findings[i] = finding
+                    return
+        if finding.address is not None:
+            self._seen_addresses.add(finding.address)
         self.findings.append(finding)
         # Auto-extract hypotheses
         if finding.category == "hypothesis":
-            self.hypotheses.append(finding.summary)
+            if finding.summary not in self.hypotheses:
+                self.hypotheses.append(finding.summary)
 
     def add_function(self, info: FunctionInfo) -> None:
         self.relevant_functions[info.address] = info

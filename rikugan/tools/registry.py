@@ -10,6 +10,7 @@ from ..core.errors import ToolError, ToolNotFoundError, ToolValidationError
 from ..core.logging import log_debug
 from ..constants import TOOL_RESULT_TRUNCATE_LEN
 from .base import ToolDefinition
+from .cache import ToolResultCache
 
 # Default timeout for tool execution (seconds).  Per-tool overrides via ToolDefinition.timeout.
 _DEFAULT_TOOL_TIMEOUT = 30.0
@@ -24,6 +25,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: Dict[str, ToolDefinition] = {}
         self._schema_cache: Optional[List[Dict[str, Any]]] = None
+        self._result_cache = ToolResultCache()
 
     @staticmethod
     def _coerce_arguments(defn: ToolDefinition, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,6 +118,12 @@ class ToolRegistry:
             raise ToolError(f"Tool {name} has no handler", tool_name=name)
 
         arguments = self._coerce_arguments(defn, arguments)
+
+        # Check cache for read-only tools
+        cached = self._result_cache.get(name, arguments)
+        if cached is not None:
+            return cached
+
         timeout = defn.timeout if defn.timeout is not None else _DEFAULT_TOOL_TIMEOUT
 
         try:
@@ -138,6 +146,12 @@ class ToolRegistry:
         result_str = self._format_result(result)
         if len(result_str) > TOOL_RESULT_TRUNCATE_LEN:
             result_str = result_str[:TOOL_RESULT_TRUNCATE_LEN] + "\n... (truncated)"
+
+        # Cache result for read-only tools; invalidate on mutating tools
+        self._result_cache.put(name, arguments, result_str)
+        if defn.mutating:
+            self._result_cache.invalidate()
+
         return result_str
 
     @staticmethod

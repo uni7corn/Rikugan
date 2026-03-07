@@ -415,4 +415,4 @@ class SessionControllerBase:
                     history.save_session(session)
                 except Exception as e:
                     log_error(f"Failed to save session {tab_id} on shutdown: {e}")
-        self._mcp_manager.stop_all()
+        self._mcp_manager.shutdown()
