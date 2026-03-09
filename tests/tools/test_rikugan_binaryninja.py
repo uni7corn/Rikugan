@@ -1,4 +1,4 @@
-"""Tests for rikugan_binaryninja.py — pure logic helpers."""
+"""Tests for rikugan.binja.bootstrap — BN plugin registration and helpers."""
 
 from __future__ import annotations
 
@@ -12,14 +12,27 @@ from unittest.mock import MagicMock, patch
 # Stubs — must be installed before importing the module
 # ---------------------------------------------------------------------------
 
-# Force binaryninja to None so `bn is not None` guard is False.
-# This must be a hard set (not setdefault) since other test files may have
-# already registered a non-None stub for binaryninja.
-sys.modules["binaryninja"] = None  # type: ignore[assignment]
-# Force re-import of rikugan_binaryninja with our binaryninja=None stub.
-sys.modules.pop("rikugan_binaryninja", None)
+# Ensure binaryninja stub exists as a real module (bootstrap imports it at top level)
+_bn_stub = types.ModuleType("binaryninja")
+sys.modules.setdefault("binaryninja", _bn_stub)
+sys.modules.setdefault("binaryninjaui", None)  # type: ignore[assignment]
 
-import rikugan_binaryninja as bnj  # noqa: E402
+# Stub rikugan.binja.ui dependencies that require Qt
+_panel_mod = types.ModuleType("rikugan.binja.ui.panel")
+_panel_mod.RikuganPanel = type("RikuganPanel", (), {})  # type: ignore[attr-defined]
+sys.modules.setdefault("rikugan.binja.ui.panel", _panel_mod)
+
+_actions_mod = types.ModuleType("rikugan.binja.ui.actions")
+_actions_mod.ACTION_DEFS = ()  # type: ignore[attr-defined]
+_actions_mod.build_context = MagicMock(return_value={})  # type: ignore[attr-defined]
+sys.modules.setdefault("rikugan.binja.ui.actions", _actions_mod)
+
+_fn_utils_mod = types.ModuleType("rikugan.binja.tools.fn_utils")
+_fn_utils_mod.get_function_at = MagicMock(return_value=None)  # type: ignore[attr-defined]
+_fn_utils_mod.get_function_name = MagicMock(return_value="")  # type: ignore[attr-defined]
+sys.modules.setdefault("rikugan.binja.tools.fn_utils", _fn_utils_mod)
+
+from rikugan.binja import bootstrap as bnj  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +107,7 @@ class TestUpdateContext(unittest.TestCase):
 
     def test_sets_last_bv(self):
         mock_bv = MagicMock()
-        with patch.object(bnj, "set_binary_ninja_context", None), \
+        with patch.object(bnj, "set_binary_ninja_context", MagicMock()), \
              patch.object(bnj, "_get_sidebar_panel", return_value=None):
             bnj._update_context(mock_bv, 0x1234)
         self.assertIs(bnj._LAST_BV, mock_bv)
@@ -107,19 +120,13 @@ class TestUpdateContext(unittest.TestCase):
             bnj._update_context(mock_bv, 0x100)
         mock_set_ctx.assert_called_once()
 
-    def test_skips_set_context_when_none(self):
-        mock_bv = MagicMock()
-        with patch.object(bnj, "set_binary_ninja_context", None), \
-             patch.object(bnj, "_get_sidebar_panel", return_value=None):
-            bnj._update_context(mock_bv)  # must not raise
-
     def test_changed_view_notifies_panel(self):
         mock_old_bv = MagicMock()
         mock_new_bv = MagicMock()
         bnj._LAST_BV = mock_old_bv
         mock_panel = MagicMock()
         mock_panel.on_database_changed = MagicMock()
-        with patch.object(bnj, "set_binary_ninja_context", None), \
+        with patch.object(bnj, "set_binary_ninja_context", MagicMock()), \
              patch.object(bnj, "_get_sidebar_panel", return_value=mock_panel), \
              patch.object(bnj, "get_database_path", return_value="/path/to.bndb"):
             bnj._update_context(mock_new_bv)
@@ -129,7 +136,7 @@ class TestUpdateContext(unittest.TestCase):
         mock_bv = MagicMock()
         bnj._LAST_BV = mock_bv
         mock_panel = MagicMock()
-        with patch.object(bnj, "set_binary_ninja_context", None), \
+        with patch.object(bnj, "set_binary_ninja_context", MagicMock()), \
              patch.object(bnj, "_get_sidebar_panel", return_value=mock_panel):
             bnj._update_context(mock_bv)
         mock_panel.on_database_changed.assert_not_called()
@@ -199,12 +206,9 @@ class TestGetSidebarPanel(unittest.TestCase):
         mock_widget.panel = mock_panel
         mock_sidebar = MagicMock()
         mock_sidebar.widget.return_value = mock_widget
-        # Patch isinstance to match RikuganPanel
-        with patch.object(bnj, "_active_sidebar", return_value=mock_sidebar), \
-             patch("rikugan_binaryninja.isinstance", return_value=True, create=True):
+        with patch.object(bnj, "_active_sidebar", return_value=mock_sidebar):
             result = bnj._get_sidebar_panel()
-        # Since we can't easily patch isinstance globally, just verify no error
-        # and sidebar.widget was called
+        # sidebar.widget was called
         mock_sidebar.widget.assert_called()
 
 
@@ -259,7 +263,7 @@ class TestActionCallback(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# _register_sidebar / _register_commands idempotency
+# register_plugin / _register_sidebar idempotency
 # ---------------------------------------------------------------------------
 
 class TestRegistrationIdempotency(unittest.TestCase):
@@ -276,15 +280,10 @@ class TestRegistrationIdempotency(unittest.TestCase):
             bnj._register_sidebar()
         self.assertFalse(bnj._SIDEBAR_REGISTERED)
 
-    def test_register_commands_noop_when_already_registered(self):
+    def test_register_plugin_noop_when_already_registered(self):
         bnj._REGISTERED = True
-        bnj._register_commands()
+        bnj.register_plugin()
         self.assertTrue(bnj._REGISTERED)
-
-    def test_register_commands_noop_when_bn_none(self):
-        with patch.object(bnj, "bn", None):
-            bnj._register_commands()
-        self.assertFalse(bnj._REGISTERED)
 
 
 if __name__ == "__main__":

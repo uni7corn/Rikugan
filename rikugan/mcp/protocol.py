@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # JSON-RPC 2.0 standard error codes
 _JSONRPC_PARSE_ERROR = -32700
@@ -16,10 +16,10 @@ class MCPToolSchema:
 
     name: str
     description: str = ""
-    input_schema: Dict[str, Any] = field(default_factory=dict)
+    input_schema: dict[str, Any] = field(default_factory=dict)
 
 
-def encode_jsonrpc_request(method: str, params: Optional[Dict[str, Any]] = None, id: int = 1) -> bytes:
+def encode_jsonrpc_request(method: str, params: dict[str, Any] | None = None, id: int = 1) -> bytes:
     """Encode a JSON-RPC 2.0 request with Content-Length framing."""
     body = {
         "jsonrpc": "2.0",
@@ -34,15 +34,20 @@ def encode_jsonrpc_request(method: str, params: Optional[Dict[str, Any]] = None,
     return frame.encode("utf-8")
 
 
-def decode_jsonrpc_response(data: str) -> Dict[str, Any]:
+def decode_jsonrpc_response(data: str) -> dict[str, Any]:
     """Decode a JSON-RPC 2.0 response from a raw string."""
     try:
         return json.loads(data)
     except json.JSONDecodeError:
-        return {"error": {"code": _JSONRPC_PARSE_ERROR, "message": f"Parse error: {data[:200]}"}}
+        return {
+            "error": {
+                "code": _JSONRPC_PARSE_ERROR,
+                "message": f"Parse error: {data[:200]}",
+            }
+        }
 
 
-def parse_content_length_frame(stream) -> Optional[str]:
+def parse_content_length_frame(stream) -> str | None:
     """Read one Content-Length framed message from a binary stream.
 
     Also handles plain newline-delimited JSON as fallback.

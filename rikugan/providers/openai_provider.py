@@ -5,12 +5,23 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from typing import Any, Dict, Generator, List, NoReturn, Optional
+from collections.abc import Generator
+from typing import Any, NoReturn
 
-from ..core.errors import AuthenticationError, ContextLengthError, ProviderError, RateLimitError
+from ..core.errors import (
+    AuthenticationError,
+    ContextLengthError,
+    ProviderError,
+    RateLimitError,
+)
 from ..core.types import (
-    Message, ModelInfo, ProviderCapabilities, Role, StreamChunk,
-    TokenUsage, ToolCall, ToolResult,
+    Message,
+    ModelInfo,
+    ProviderCapabilities,
+    Role,
+    StreamChunk,
+    TokenUsage,
+    ToolCall,
 )
 from .base import LLMProvider
 
@@ -26,11 +37,11 @@ class OpenAIProvider(LLMProvider):
         if self._client is None:
             try:
                 openai = importlib.import_module("openai")
-            except ImportError:
+            except ImportError as exc:
                 raise ProviderError(
                     "openai package not installed. Run: pip install openai",
                     provider="openai",
-                )
+                ) from exc
             if not self.api_key:
                 raise AuthenticationError(provider="openai")
             kwargs = {"api_key": self.api_key, "timeout": 120.0}
@@ -46,44 +57,58 @@ class OpenAIProvider(LLMProvider):
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            streaming=True, tool_use=True, vision=True,
-            max_context_window=128000, max_output_tokens=16384,
+            streaming=True,
+            tool_use=True,
+            vision=True,
+            max_context_window=128000,
+            max_output_tokens=16384,
             supports_system_prompt=True,
         )
 
-    def _fetch_models_live(self) -> List[ModelInfo]:
+    def _fetch_models_live(self) -> list[ModelInfo]:
         """Fetch chat-capable models from the OpenAI API."""
         client = self._get_client()
         response = client.models.list()
         models = []
         chat_prefixes = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
-        skip_words = ("-instruct", "embedding", "tts", "whisper", "dall-e", "audio", "realtime", "transcribe")
+        skip_words = (
+            "-instruct",
+            "embedding",
+            "tts",
+            "whisper",
+            "dall-e",
+            "audio",
+            "realtime",
+            "transcribe",
+        )
         for m in response.data:
             if not any(m.id.startswith(p) for p in chat_prefixes):
                 continue
             if any(s in m.id for s in skip_words):
                 continue
-            models.append(ModelInfo(
-                id=m.id,
-                name=m.id,
-                provider="openai",
-                context_window=128000,
-                max_output_tokens=16384,
-                supports_tools=True,
-                supports_vision=True,
-            ))
+            models.append(
+                ModelInfo(
+                    id=m.id,
+                    name=m.id,
+                    provider="openai",
+                    context_window=128000,
+                    max_output_tokens=16384,
+                    supports_tools=True,
+                    supports_vision=True,
+                )
+            )
         models.sort(key=lambda m: m.id, reverse=True)
         return models if models else self._builtin_models()
 
     @staticmethod
-    def _builtin_models() -> List[ModelInfo]:
+    def _builtin_models() -> list[ModelInfo]:
         return [
             ModelInfo("gpt-4o", "GPT-4o", "openai", 128000, 16384, True, True),
             ModelInfo("gpt-4o-mini", "GPT-4o Mini", "openai", 128000, 16384, True, True),
             ModelInfo("o3-mini", "o3-mini", "openai", 200000, 100000, True, False),
         ]
 
-    def _format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+    def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         formatted = []
         for msg in messages:
             if msg.role == Role.SYSTEM:
@@ -91,7 +116,7 @@ class OpenAIProvider(LLMProvider):
             elif msg.role == Role.USER:
                 formatted.append({"role": "user", "content": msg.content})
             elif msg.role == Role.ASSISTANT:
-                d: Dict[str, Any] = {"role": "assistant"}
+                d: dict[str, Any] = {"role": "assistant"}
                 if msg.content:
                     d["content"] = msg.content
                 if msg.tool_calls:
@@ -109,11 +134,13 @@ class OpenAIProvider(LLMProvider):
                 formatted.append(d)
             elif msg.role == Role.TOOL:
                 for tr in msg.tool_results:
-                    formatted.append({
-                        "role": "tool",
-                        "tool_call_id": tr.tool_call_id,
-                        "content": tr.content,
-                    })
+                    formatted.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tr.tool_call_id,
+                            "content": tr.content,
+                        }
+                    )
         return formatted
 
     def _normalize_response(self, response) -> Message:
@@ -123,11 +150,13 @@ class OpenAIProvider(LLMProvider):
         tool_calls = []
         if rm.tool_calls:
             for tc in rm.tool_calls:
-                tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
-                ))
+                tool_calls.append(
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=json.loads(tc.function.arguments),
+                    )
+                )
 
         usage = TokenUsage()
         if response.usage:
@@ -151,7 +180,10 @@ class OpenAIProvider(LLMProvider):
         )
 
     def _handle_api_error(self, e: Exception) -> NoReturn:
-        openai = importlib.import_module("openai")
+        try:
+            openai = importlib.import_module("openai")
+        except ImportError:
+            raise ProviderError(str(e), provider="openai") from e
         if isinstance(e, openai.AuthenticationError):
             raise AuthenticationError(provider="openai") from e
         if isinstance(e, openai.RateLimitError):
@@ -164,19 +196,19 @@ class OpenAIProvider(LLMProvider):
 
     def _build_request_kwargs(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]],
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
         temperature: float,
         max_tokens: int,
         system: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build kwargs dict for chat.completions.create."""
         msgs = []
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.extend(self._format_messages(messages))
 
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": msgs,
             "max_tokens": max_tokens,
@@ -186,34 +218,22 @@ class OpenAIProvider(LLMProvider):
             kwargs["tools"] = tools
         return kwargs
 
-    def chat(
-        self, messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3, max_tokens: int = 4096, system: str = "",
-    ) -> Message:
-        client = self._get_client()
-        kwargs = self._build_request_kwargs(messages, tools, temperature, max_tokens, system)
+    def _call_api(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        """Invoke the OpenAI chat.completions.create API."""
+        return client.chat.completions.create(**kwargs)
 
-        try:
-            response = client.chat.completions.create(**kwargs)
-        except Exception as e:
-            self._handle_api_error(e)
-
-        return self._normalize_response(response)
-
-    def chat_stream(
-        self, messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3, max_tokens: int = 4096, system: str = "",
+    def _stream_chunks(
+        self,
+        client: Any,
+        kwargs: dict[str, Any],
     ) -> Generator[StreamChunk, None, None]:
-        client = self._get_client()
-        kwargs = self._build_request_kwargs(messages, tools, temperature, max_tokens, system)
+        """Yield StreamChunks from the OpenAI streaming API."""
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
 
         try:
             stream = client.chat.completions.create(**kwargs)
-            current_tool_calls: Dict[int, dict] = {}
+            current_tool_calls: dict[int, dict] = {}
 
             _in_reasoning = False
 
@@ -273,11 +293,13 @@ class OpenAIProvider(LLMProvider):
                     yield StreamChunk(finish_reason=chunk.choices[0].finish_reason)
 
                 if chunk.usage:
-                    yield StreamChunk(usage=TokenUsage(
-                        prompt_tokens=chunk.usage.prompt_tokens,
-                        completion_tokens=chunk.usage.completion_tokens,
-                        total_tokens=chunk.usage.total_tokens,
-                    ))
+                    yield StreamChunk(
+                        usage=TokenUsage(
+                            prompt_tokens=chunk.usage.prompt_tokens,
+                            completion_tokens=chunk.usage.completion_tokens,
+                            total_tokens=chunk.usage.total_tokens,
+                        )
+                    )
 
         except Exception as e:
             self._handle_api_error(e)

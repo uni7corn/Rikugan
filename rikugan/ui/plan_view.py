@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from .qt_compat import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QWidget, QSizePolicy, Qt,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -66,7 +68,7 @@ class PlanView(QFrame):
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("plan_view")
-        self._steps: List[PlanStepWidget] = []
+        self._steps: list[PlanStepWidget] = []
         self._on_approved = None
         self._on_rejected = None
 
@@ -108,7 +110,7 @@ class PlanView(QFrame):
         layout.addLayout(btn_layout)
         layout.addStretch()
 
-    def set_plan(self, steps: List[str]) -> None:
+    def set_plan(self, steps: list[str]) -> None:
         """Set plan steps and display them."""
         self.clear()
         for i, text in enumerate(steps):

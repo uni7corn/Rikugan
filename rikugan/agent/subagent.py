@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Generator, List, Optional
+from collections.abc import Generator
+from typing import Any
 
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_info
-from ..core.types import Message, Role
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
-from ..tools.registry import ToolRegistry
 from ..state.session import SessionState
+from ..tools.registry import ToolRegistry
 from .exploration_mode import KnowledgeBase
 from .turn import TurnEvent
 
@@ -33,8 +33,8 @@ class SubagentRunner:
         tool_registry: ToolRegistry,
         config: RikuganConfig,
         host_name: str = "IDA Pro",
-        skill_registry: Optional[SkillRegistry] = None,
-        parent_loop: Optional[Any] = None,
+        skill_registry: SkillRegistry | None = None,
+        parent_loop: Any | None = None,
     ):
         self.provider = provider
         self.tools = tool_registry
@@ -42,10 +42,10 @@ class SubagentRunner:
         self.host_name = host_name
         self.skills = skill_registry
         self._parent_loop = parent_loop
-        self._last_session: Optional[SessionState] = None
+        self._last_session: SessionState | None = None
 
     @property
-    def last_session(self) -> Optional[SessionState]:
+    def last_session(self) -> SessionState | None:
         """The session from the most recent subagent run."""
         return self._last_session
 
@@ -138,14 +138,10 @@ class SubagentRunner:
             parent_loop=self._parent_loop,
         )
 
-        log_info(
-            f"Subagent exploration started: goal={user_goal[:80]!r}, "
-            f"max_turns={max_turns}"
-        )
+        log_info(f"Subagent exploration started: goal={user_goal[:80]!r}, max_turns={max_turns}")
 
         # Run in explore-only mode via the /explore prefix
-        for event in loop.run(f"/explore {user_goal}"):
-            yield event
+        yield from loop.run(f"/explore {user_goal}")
 
         # Extract the knowledge base.  _run_exploration_mode stores
         # it in _last_knowledge_base before clearing _exploration_state.

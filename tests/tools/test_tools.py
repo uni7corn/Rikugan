@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import os
 import unittest
@@ -12,9 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
-from rikugan.tools.base import tool, ToolDefinition, _build_parameters
+from rikugan.tools.base import tool
 from rikugan.tools.registry import ToolRegistry
-from rikugan.core.errors import ToolNotFoundError, ToolValidationError
+from rikugan.core.errors import ToolNotFoundError
 
 
 class TestToolDecorator(unittest.TestCase):
@@ -111,12 +110,12 @@ class TestBuiltinTools(unittest.TestCase):
     """Test that built-in tools are loadable (using mocks)."""
 
     def test_navigation_tools(self):
-        from rikugan.tools.navigation import get_cursor_position
+        from rikugan.ida.tools.navigation import get_cursor_position
         result = get_cursor_position()
         self.assertTrue(result.startswith("0x"))
 
     def test_database_tools_loadable(self):
-        from rikugan.tools import database
+        from rikugan.ida.tools import database
         self.assertTrue(hasattr(database, "get_binary_info"))
 
 

@@ -5,9 +5,8 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
-from ..core.logging import log_debug
-from .base import parse_addr, tool
-
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 
 try:
     ida_ida = importlib.import_module("ida_ida")
@@ -18,7 +17,6 @@ try:
     idc = importlib.import_module("idc")
 except ImportError as e:
     log_debug(f"IDA modules not available: {e}")
-
 
 
 @tool(category="database")
@@ -40,7 +38,7 @@ def list_segments() -> str:
                 perms += "W"
             if seg.perm & 1:  # X
                 perms += "X"
-        lines.append(f"  {name:16s}  0x{seg_ea:x}–0x{end:x}  ({size:#x} bytes)  {perms}")
+        lines.append(f"  {name:16s}  0x{seg_ea:x}\u20130x{end:x}  ({size:#x} bytes)  {perms}")
     return "\n".join(lines)
 
 
@@ -56,9 +54,9 @@ def list_imports() -> str:
 
         def _cb(ea, name, ordinal):
             if name:
-                entries.append(f"    0x{ea:x}  {name}")
+                entries.append(f"    0x{ea:x}  {name}")  # noqa: B023
             else:
-                entries.append(f"    0x{ea:x}  ordinal #{ordinal}")
+                entries.append(f"    0x{ea:x}  ordinal #{ordinal}")  # noqa: B023
             return True
 
         ida_nalt.enum_import_names(i, _cb)
@@ -148,7 +146,7 @@ def read_bytes(
             else:
                 b = idc.get_wide_byte(row_ea + j)
                 hex_parts.append(f"{b:02x}")
-                ascii_parts.append(chr(b) if 0x20 <= b < 0x7f else ".")
+                ascii_parts.append(chr(b) if 0x20 <= b < 0x7F else ".")
         hex_str = " ".join(hex_parts[:8]) + "  " + " ".join(hex_parts[8:])
         ascii_str = "".join(ascii_parts)
         lines.append(f"  0x{row_ea:08x}  {hex_str}  |{ascii_str}|")

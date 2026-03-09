@@ -5,17 +5,17 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..core.errors import SkillError
 from ..core.logging import log_debug, log_error
-
 
 # ---------------------------------------------------------------------------
 # Minimal frontmatter parser (no PyYAML dependency)
 # ---------------------------------------------------------------------------
 
-def _parse_frontmatter(text: str) -> Dict[str, Any]:
+
+def _parse_frontmatter(text: str) -> dict[str, Any]:
     """Parse YAML-like frontmatter between --- markers.
 
     Supports:
@@ -28,7 +28,7 @@ def _parse_frontmatter(text: str) -> Dict[str, Any]:
         subkey: value
         subkey2: value2
     """
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     lines = text.strip().splitlines()
 
     i = 0
@@ -61,8 +61,8 @@ def _parse_frontmatter(text: str) -> Dict[str, Any]:
         else:
             # Check for block list (next lines starting with "  - ")
             # or nested dict (next lines starting with "  key: value")
-            block_items: List[str] = []
-            nested_dict: Dict[str, str] = {}
+            block_items: list[str] = []
+            nested_dict: dict[str, str] = {}
             j = i + 1
             while j < len(lines):
                 bline = lines[j]
@@ -114,13 +114,14 @@ def _split_frontmatter(text: str) -> tuple:
         return ("", text)
 
     fm_text = rest[:idx]
-    body = rest[idx + 4:]  # skip past "\n---"
+    body = rest[idx + 4 :]  # skip past "\n---"
     return (fm_text, body.lstrip("\n"))
 
 
 # ---------------------------------------------------------------------------
 # SkillDefinition
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SkillDefinition:
@@ -129,14 +130,14 @@ class SkillDefinition:
     name: str
     description: str
     directory: str
-    allowed_tools: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
-    triggers: List[str] = field(default_factory=list)
+    allowed_tools: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    triggers: list[str] = field(default_factory=list)
     mode: str = ""  # e.g. "exploration" to trigger exploration mode
     author: str = ""
     version: str = ""
-    frontmatter: Dict[str, Any] = field(default_factory=dict)
-    _body: Optional[str] = field(default=None, repr=False)
+    frontmatter: dict[str, Any] = field(default_factory=dict)
+    _body: str | None = field(default=None, repr=False)
     _md_path: str = field(default="", repr=False)
 
     @property
@@ -155,10 +156,10 @@ class SkillDefinition:
 def _load_body(md_path: str) -> str:
     """Read the body (everything after frontmatter) from a SKILL.md file."""
     try:
-        with open(md_path, "r", encoding="utf-8") as f:
+        with open(md_path, encoding="utf-8") as f:
             text = f.read()
     except OSError as e:
-        raise SkillError(f"Cannot read skill file {md_path}: {e}")
+        raise SkillError(f"Cannot read skill file {md_path}: {e}") from e
 
     _fm, body = _split_frontmatter(text)
     body = body.strip()
@@ -187,7 +188,7 @@ def _load_references(skill_dir: str) -> str:
 
     _HOST_SUBDIR = {HOST_IDA: "ida", HOST_BINARY_NINJA: "binja"}
 
-    parts: List[str] = []
+    parts: list[str] = []
 
     def _load_dir(directory: str) -> None:
         for fname in sorted(os.listdir(directory)):
@@ -195,7 +196,7 @@ def _load_references(skill_dir: str) -> str:
                 continue
             fpath = os.path.join(directory, fname)
             try:
-                with open(fpath, "r", encoding="utf-8") as f:
+                with open(fpath, encoding="utf-8") as f:
                     content = f.read().strip()
                 if content:
                     parts.append(f"## Reference: {fname}\n{content}")
@@ -220,7 +221,8 @@ def _load_references(skill_dir: str) -> str:
 # Discovery
 # ---------------------------------------------------------------------------
 
-def discover_skills(skills_dir: str) -> List[SkillDefinition]:
+
+def discover_skills(skills_dir: str) -> list[SkillDefinition]:
     """Scan skills_dir for <slug>/SKILL.md, return loaded SkillDefinitions.
 
     Each subdirectory with a SKILL.md is treated as a skill.
@@ -230,7 +232,7 @@ def discover_skills(skills_dir: str) -> List[SkillDefinition]:
         log_debug(f"Skills directory not found: {skills_dir}")
         return []
 
-    skills: List[SkillDefinition] = []
+    skills: list[SkillDefinition] = []
 
     for entry in sorted(os.listdir(skills_dir)):
         skill_dir = os.path.join(skills_dir, entry)
@@ -239,7 +241,7 @@ def discover_skills(skills_dir: str) -> List[SkillDefinition]:
             continue
 
         try:
-            with open(md_path, "r", encoding="utf-8") as f:
+            with open(md_path, encoding="utf-8") as f:
                 text = f.read()
 
             fm_text, body_text = _split_frontmatter(text)

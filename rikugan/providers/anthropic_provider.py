@@ -7,18 +7,29 @@ import json
 import os
 import subprocess
 import sys
-from typing import Any, Dict, Generator, List, NoReturn, Optional, Tuple
+from collections.abc import Generator
+from typing import Any, NoReturn
 
-from ..core.errors import AuthenticationError, ContextLengthError, ProviderError, RateLimitError
-from ..core.types import (
-    Message, ModelInfo, ProviderCapabilities, Role, StreamChunk,
-    TokenUsage, ToolCall, ToolResult,
+from ..core.errors import (
+    AuthenticationError,
+    ContextLengthError,
+    ProviderError,
+    RateLimitError,
 )
 from ..core.logging import log_debug, log_error
+from ..core.types import (
+    Message,
+    ModelInfo,
+    ProviderCapabilities,
+    Role,
+    StreamChunk,
+    TokenUsage,
+    ToolCall,
+)
 from .base import LLMProvider
 
 
-def _read_oauth_from_keychain() -> Optional[str]:
+def _read_oauth_from_keychain() -> str | None:
     """Read the Claude OAuth access token from macOS Keychain.
 
     `claude setup-token` stores credentials under "Claude Code-credentials"
@@ -28,8 +39,16 @@ def _read_oauth_from_keychain() -> Optional[str]:
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=5,
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return None
@@ -39,7 +58,7 @@ def _read_oauth_from_keychain() -> Optional[str]:
         return None
 
 
-def resolve_anthropic_auth(api_key: str = "") -> Tuple[str, str]:
+def resolve_anthropic_auth(api_key: str = "") -> tuple[str, str]:
     """Resolve the best available Anthropic credential.
 
     Returns (token, auth_type) where auth_type is "api_key" or "oauth".
@@ -77,7 +96,13 @@ class AnthropicProvider(LLMProvider):
     the macOS Keychain when no explicit API key is provided.
     """
 
-    def __init__(self, api_key: str = "", api_base: str = "", model: str = "claude-sonnet-4-20250514", **kwargs):
+    def __init__(
+        self,
+        api_key: str = "",
+        api_base: str = "",
+        model: str = "claude-sonnet-4-20250514",
+        **kwargs,
+    ):
         token, self._auth_type = resolve_anthropic_auth(api_key)
         super().__init__(api_key=token, api_base=api_base, model=model)
 
@@ -85,11 +110,11 @@ class AnthropicProvider(LLMProvider):
         if self._client is None:
             try:
                 anthropic = importlib.import_module("anthropic")
-            except ImportError:
+            except ImportError as exc:
                 raise ProviderError(
                     "anthropic package not installed. Run: pip install anthropic",
                     provider="anthropic",
-                )
+                ) from exc
             if not self.api_key:
                 raise AuthenticationError(
                     "No Anthropic credential found. Set ANTHROPIC_API_KEY, "
@@ -98,7 +123,7 @@ class AnthropicProvider(LLMProvider):
                 )
             # OAuth tokens use Bearer auth + beta header;
             # API keys use x-api-key header.
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             if self.api_base:
                 kwargs["base_url"] = self.api_base
             kwargs["timeout"] = 120.0  # 2min vs SDK default 10min
@@ -119,7 +144,7 @@ class AnthropicProvider(LLMProvider):
     def auth_type(self) -> str:
         return self._auth_type
 
-    def auth_status(self) -> Tuple[str, str]:
+    def auth_status(self) -> tuple[str, str]:
         if self.api_key:
             if self._auth_type == "oauth":
                 return "OAuth", "ok"
@@ -138,7 +163,7 @@ class AnthropicProvider(LLMProvider):
             supports_cache_control=True,
         )
 
-    def _fetch_models_live(self) -> List[ModelInfo]:
+    def _fetch_models_live(self) -> list[ModelInfo]:
         """Fetch models from the Anthropic API."""
         client = self._get_client()
         response = client.models.list(limit=100)
@@ -150,30 +175,72 @@ class AnthropicProvider(LLMProvider):
             is_opus = "opus" in model_id
             ctx_window = 200000
             max_output = 16384 if is_opus else 8192
-            models.append(ModelInfo(
-                id=model_id,
-                name=display_name,
-                provider="anthropic",
-                context_window=ctx_window,
-                max_output_tokens=max_output,
-                supports_tools=True,
-                supports_vision=True,
-            ))
+            models.append(
+                ModelInfo(
+                    id=model_id,
+                    name=display_name,
+                    provider="anthropic",
+                    context_window=ctx_window,
+                    max_output_tokens=max_output,
+                    supports_tools=True,
+                    supports_vision=True,
+                )
+            )
         # Sort: newest/best first
         models.sort(key=lambda m: m.id, reverse=True)
         return models if models else self._builtin_models()
 
     @staticmethod
-    def _builtin_models() -> List[ModelInfo]:
+    def _builtin_models() -> list[ModelInfo]:
         return [
-            ModelInfo("claude-sonnet-4-6", "Claude Sonnet 4.6", "anthropic", 200000, 8192, True, True),
-            ModelInfo("claude-opus-4-6", "Claude Opus 4.6", "anthropic", 200000, 16384, True, True),
-            ModelInfo("claude-opus-4-20250514", "Claude Opus 4", "anthropic", 200000, 16384, True, True),
-            ModelInfo("claude-sonnet-4-20250514", "Claude Sonnet 4", "anthropic", 200000, 8192, True, True),
-            ModelInfo("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "anthropic", 200000, 8192, True, True),
+            ModelInfo(
+                "claude-sonnet-4-6",
+                "Claude Sonnet 4.6",
+                "anthropic",
+                200000,
+                8192,
+                True,
+                True,
+            ),
+            ModelInfo(
+                "claude-opus-4-6",
+                "Claude Opus 4.6",
+                "anthropic",
+                200000,
+                16384,
+                True,
+                True,
+            ),
+            ModelInfo(
+                "claude-opus-4-20250514",
+                "Claude Opus 4",
+                "anthropic",
+                200000,
+                16384,
+                True,
+                True,
+            ),
+            ModelInfo(
+                "claude-sonnet-4-20250514",
+                "Claude Sonnet 4",
+                "anthropic",
+                200000,
+                8192,
+                True,
+                True,
+            ),
+            ModelInfo(
+                "claude-haiku-4-5-20251001",
+                "Claude Haiku 4.5",
+                "anthropic",
+                200000,
+                8192,
+                True,
+                True,
+            ),
         ]
 
-    def _format_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+    def _format_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert to Anthropic's messages format."""
         formatted = []
         for msg in messages:
@@ -188,38 +255,48 @@ class AnthropicProvider(LLMProvider):
                 if msg.content:
                     content.append({"type": "text", "text": msg.content})
                 for tc in msg.tool_calls:
-                    content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
-                    })
-                formatted.append({"role": "assistant", "content": content or msg.content})
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments,
+                        }
+                    )
+                formatted.append(
+                    {"role": "assistant", "content": content or msg.content}  # type: ignore[dict-item]
+                )
 
             elif msg.role == Role.TOOL:
                 for tr in msg.tool_results:
-                    formatted.append({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": tr.tool_call_id,
-                            "content": tr.content,
-                            "is_error": tr.is_error,
-                        }],
-                    })
+                    formatted.append(
+                        {
+                            "role": "user",
+                            "content": [  # type: ignore[dict-item]
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tr.tool_call_id,
+                                    "content": tr.content,
+                                    "is_error": tr.is_error,
+                                }
+                            ],
+                        }
+                    )
 
         return formatted
 
-    def _format_tools(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert OpenAI-style tool schemas to Anthropic format."""
         anthropic_tools = []
         for t in tools:
             func = t.get("function", t)
-            anthropic_tools.append({
-                "name": func["name"],
-                "description": func.get("description", ""),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
-            })
+            anthropic_tools.append(
+                {
+                    "name": func["name"],
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+                }
+            )
         return anthropic_tools
 
     def _normalize_response(self, response) -> Message:
@@ -233,11 +310,13 @@ class AnthropicProvider(LLMProvider):
             elif block.type == "text":
                 content_text += block.text
             elif block.type == "tool_use":
-                tool_calls.append(ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    arguments=block.input if isinstance(block.input, dict) else json.loads(block.input),
-                ))
+                tool_calls.append(
+                    ToolCall(
+                        id=block.id,
+                        name=block.name,
+                        arguments=block.input if isinstance(block.input, dict) else json.loads(block.input),
+                    )
+                )
 
         usage = TokenUsage(
             prompt_tokens=response.usage.input_tokens,
@@ -256,7 +335,10 @@ class AnthropicProvider(LLMProvider):
 
     def _handle_api_error(self, e: Exception) -> NoReturn:
         """Raise the appropriate Rikugan error from an Anthropic API error."""
-        anthropic = importlib.import_module("anthropic")
+        try:
+            anthropic = importlib.import_module("anthropic")
+        except ImportError:
+            raise ProviderError(str(e), provider="anthropic") from e
 
         if isinstance(e, anthropic.AuthenticationError):
             raise AuthenticationError(provider="anthropic") from e
@@ -280,16 +362,16 @@ class AnthropicProvider(LLMProvider):
 
     def _build_request_kwargs(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]],
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
         temperature: float,
         max_tokens: int,
         system: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build kwargs dict for messages.create/stream."""
         formatted_messages = self._format_messages(messages)
 
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": formatted_messages,
             "max_tokens": max_tokens,
@@ -331,34 +413,16 @@ class AnthropicProvider(LLMProvider):
 
         return kwargs
 
-    def chat(
-        self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        system: str = "",
-    ) -> Message:
-        client = self._get_client()
-        kwargs = self._build_request_kwargs(messages, tools, temperature, max_tokens, system)
+    def _call_api(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        """Invoke the Anthropic messages.create API."""
+        return client.messages.create(**kwargs)
 
-        try:
-            response = client.messages.create(**kwargs)
-            return self._normalize_response(response)
-        except Exception as e:
-            self._handle_api_error(e)
-
-    def chat_stream(
+    def _stream_chunks(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        system: str = "",
+        client: Any,
+        kwargs: dict[str, Any],
     ) -> Generator[StreamChunk, None, None]:
-        client = self._get_client()
-        kwargs = self._build_request_kwargs(messages, tools, temperature, max_tokens, system)
-
+        """Yield StreamChunks from the Anthropic streaming API."""
         try:
             with client.messages.stream(**kwargs) as stream:
                 current_tool_id = None
@@ -426,20 +490,24 @@ class AnthropicProvider(LLMProvider):
                         if usage_delta is not None:
                             output_tokens = getattr(usage_delta, "output_tokens", 0) or 0
                             if output_tokens > 0:
-                                yield StreamChunk(usage=TokenUsage(
-                                    prompt_tokens=0,
-                                    completion_tokens=output_tokens,
-                                ))
+                                yield StreamChunk(
+                                    usage=TokenUsage(
+                                        prompt_tokens=0,
+                                        completion_tokens=output_tokens,
+                                    )
+                                )
 
                     elif etype == "message_start":
                         msg = event.message
                         if hasattr(msg, "usage"):
-                            yield StreamChunk(usage=TokenUsage(
-                                prompt_tokens=msg.usage.input_tokens,
-                                completion_tokens=0,
-                                cache_read_tokens=getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
-                                cache_creation_tokens=getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
-                            ))
+                            yield StreamChunk(
+                                usage=TokenUsage(
+                                    prompt_tokens=msg.usage.input_tokens,
+                                    completion_tokens=0,
+                                    cache_read_tokens=getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
+                                    cache_creation_tokens=getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
+                                )
+                            )
 
         except Exception as e:
             log_error(f"AnthropicProvider.chat_stream error: {e}")

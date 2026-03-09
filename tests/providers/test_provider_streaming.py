@@ -10,13 +10,13 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
-from rikugan.core.types import Message, Role, StreamChunk, TokenUsage
+from rikugan.core.types import Message, Role
 
 
 class TestAnthropicStreaming(unittest.TestCase):

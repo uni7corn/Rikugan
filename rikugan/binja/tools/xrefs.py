@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Iterable, List, Tuple
+from collections.abc import Iterable
+from typing import Annotated
 
 from ...core.logging import log_debug
 from ...tools.base import tool
 from ...tools.xrefs import format_callers_callees
-from .common import (
-    get_function_at,
-    get_function_name,
-    get_name_at,
-    parse_addr_like,
-    require_bv,
-)
+from .compat import parse_addr_like, require_bv
+from .fn_utils import get_function_at, get_function_name
+from .sym_utils import resolve_name_at
 
 
-def _code_refs_to(bv, ea: int) -> Iterable[Tuple[int, str, str]]:
+def _code_refs_to(bv, ea: int) -> Iterable[tuple[int, str, str]]:
     get_refs = getattr(bv, "get_code_refs", None)
     if not callable(get_refs):
         return []
@@ -37,7 +34,7 @@ def _code_refs_to(bv, ea: int) -> Iterable[Tuple[int, str, str]]:
     return out
 
 
-def _data_refs_to(bv, ea: int) -> Iterable[Tuple[int, str, str]]:
+def _data_refs_to(bv, ea: int) -> Iterable[tuple[int, str, str]]:
     get_refs = getattr(bv, "get_data_refs", None)
     if not callable(get_refs):
         return []
@@ -56,8 +53,8 @@ def _data_refs_to(bv, ea: int) -> Iterable[Tuple[int, str, str]]:
     return out
 
 
-def _refs_from(bv, ea: int) -> List[Tuple[int, str]]:
-    out: List[Tuple[int, str]] = []
+def _refs_from(bv, ea: int) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
     get_code = getattr(bv, "get_code_refs_from", None)
     if callable(get_code):
         try:
@@ -90,7 +87,7 @@ def xrefs_to(
     """Get all cross-references to the given address."""
     bv = require_bv()
     ea = parse_addr_like(address)
-    target_name = get_name_at(bv, ea)
+    target_name = resolve_name_at(bv, ea)
     lines = [f"Cross-references to 0x{ea:x}" + (f" ({target_name})" if target_name else "") + ":"]
 
     refs = list(_code_refs_to(bv, ea)) + list(_data_refs_to(bv, ea))
@@ -123,7 +120,7 @@ def xrefs_from(
         if count >= limit:
             lines.append(f"  ... (truncated at {limit})")
             break
-        target_name = get_name_at(bv, dst) or ""
+        target_name = resolve_name_at(bv, dst) or ""
         lines.append(f"  0x{dst:x}  [{kind:12s}]  {target_name}")
         count += 1
     if count == 0:

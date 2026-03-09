@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from .qt_compat import (
-    QPlainTextEdit, QWidget, QVBoxLayout, QLabel, QFrame, Qt, QSizePolicy,
+    QFrame,
+    QLabel,
+    QPlainTextEdit,
+    QSizePolicy,
+    Qt,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -27,16 +31,16 @@ class _SkillPopup(QFrame):
             "QFrame#skill_popup { background: #2d2d2d; border: 1px solid #555; "
             "border-radius: 4px; padding: 2px; }"
             "QLabel { color: #d4d4d4; padding: 3px 8px; }"
-            "QLabel[selected=\"true\"] { background: #094771; border-radius: 3px; }"
+            'QLabel[selected="true"] { background: #094771; border-radius: 3px; }'
         )
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(2, 2, 2, 2)
         self._layout.setSpacing(0)
-        self._labels: List[QLabel] = []
-        self._slugs: List[str] = []
+        self._labels: list[QLabel] = []
+        self._slugs: list[str] = []
         self._selected_idx = 0
 
-    def set_items(self, slugs: List[str]) -> None:
+    def set_items(self, slugs: list[str]) -> None:
         """Replace popup contents with filtered slugs."""
         # Clear old labels
         for lbl in self._labels:
@@ -66,7 +70,7 @@ class _SkillPopup(QFrame):
         self._selected_idx = (self._selected_idx + delta) % len(self._slugs)
         self._update_highlight()
 
-    def current_slug(self) -> Optional[str]:
+    def current_slug(self) -> str | None:
         if 0 <= self._selected_idx < len(self._slugs):
             return self._slugs[self._selected_idx]
         return None
@@ -98,8 +102,8 @@ class InputArea(QPlainTextEdit):
         self.setMinimumHeight(40)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._enabled = True
-        self._skill_slugs: List[str] = []
-        self._popup: Optional[_SkillPopup] = None
+        self._skill_slugs: list[str] = []
+        self._popup: _SkillPopup | None = None
         self._submit_callback = None  # Callable[[str], None]
         self._cancel_callback = None  # Callable[[], None]
 
@@ -111,7 +115,7 @@ class InputArea(QPlainTextEdit):
         """Set the callback for cancel (Escape key). Callback signature: () -> None."""
         self._cancel_callback = callback
 
-    def set_skill_slugs(self, slugs: List[str]) -> None:
+    def set_skill_slugs(self, slugs: list[str]) -> None:
         """Set the list of available skill slugs for autocomplete.
 
         Automatically includes /plan, /modify, and /explore as built-in commands.
@@ -120,7 +124,7 @@ class InputArea(QPlainTextEdit):
         combined.update(("plan", "modify", "explore"))
         self._skill_slugs = sorted(combined)
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802
+    def keyPressEvent(self, event) -> None:
         # Handle popup navigation when popup is visible
         if self._popup and self._popup.isVisible():
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
@@ -192,7 +196,7 @@ class InputArea(QPlainTextEdit):
 
         self._show_popup(matches)
 
-    def _show_popup(self, slugs: List[str]) -> None:
+    def _show_popup(self, slugs: list[str]) -> None:
         if self._popup is None:
             self._popup = _SkillPopup()
         self._popup.set_items(slugs)

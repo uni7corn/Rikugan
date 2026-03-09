@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import importlib
-from typing import Annotated, Optional
+from typing import Annotated
 
-from .base import parse_addr, tool
-
+from ...tools.base import parse_addr, tool
 
 ida_funcs = idautils = idc = None  # populated below when IDA is available
 try:
@@ -15,7 +14,6 @@ try:
     idc = importlib.import_module("idc")
 except ImportError:
     ida_funcs = idautils = idc = None  # IDA not present — tools unavailable in non-IDA context
-
 
 
 @tool(category="disassembly")
@@ -86,7 +84,9 @@ def read_function_disassembly(
 
 
 @tool(category="disassembly")
-def get_instruction_info(address: Annotated[str, "Instruction address (hex string)"]) -> str:
+def get_instruction_info(
+    address: Annotated[str, "Instruction address (hex string)"],
+) -> str:
     """Get detailed info about a single instruction."""
 
     ea = parse_addr(address)

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import importlib
-from typing import Annotated, Optional
+from typing import Annotated
 
-from ..core.logging import log_debug
-from .base import parse_addr, tool
-
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 
 try:
     ida_funcs = importlib.import_module("ida_funcs")
@@ -17,7 +16,6 @@ try:
     idc = importlib.import_module("idc")
 except ImportError as e:
     log_debug(f"IDA modules not available: {e}")
-
 
 
 @tool(category="navigation")
@@ -38,16 +36,13 @@ def get_current_function() -> str:
 
     name = ida_name.get_name(func.start_ea)
     size = func.end_ea - func.start_ea
-    return (
-        f"Name: {name}\n"
-        f"Start: 0x{func.start_ea:x}\n"
-        f"End: 0x{func.end_ea:x}\n"
-        f"Size: {size} bytes"
-    )
+    return f"Name: {name}\nStart: 0x{func.start_ea:x}\nEnd: 0x{func.end_ea:x}\nSize: {size} bytes"
 
 
 @tool(category="navigation")
-def jump_to(address: Annotated[str, "Address to jump to (hex string, e.g. '0x401000')"]) -> str:
+def jump_to(
+    address: Annotated[str, "Address to jump to (hex string, e.g. '0x401000')"],
+) -> str:
     """Jump the IDA disassembly view to the specified address."""
 
     ea = parse_addr(address)

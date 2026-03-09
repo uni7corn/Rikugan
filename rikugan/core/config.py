@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .profile import AnalysisProfile
 
 from ..constants import (
     CONFIG_DIR_NAME,
@@ -34,14 +37,14 @@ class ProviderConfig:
     temperature: float = DEFAULT_TEMPERATURE
     max_tokens: int = DEFAULT_MAX_TOKENS
     context_window: int = DEFAULT_CONTEXT_WINDOW
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class RikuganConfig:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
-    providers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    custom_providers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    providers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    custom_providers: dict[str, dict[str, Any]] = field(default_factory=dict)
     auto_context: bool = True
     plan_mode_default: bool = False
     checkpoint_auto_save: bool = True
@@ -50,6 +53,15 @@ class RikuganConfig:
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
     theme: str = "dark"
+
+    # Skills & MCP external integration
+    disabled_skills: list[str] = field(default_factory=list)
+    enabled_external_skills: list[str] = field(default_factory=list)
+    enabled_external_mcp: list[str] = field(default_factory=list)
+
+    # Analysis profiles
+    active_profile: str = "default"
+    custom_profiles: dict[str, dict] = field(default_factory=dict)
 
     _config_dir: str = field(default_factory=_default_config_dir, repr=False)
 
@@ -69,9 +81,9 @@ class RikuganConfig:
     def mcp_config_path(self) -> str:
         return os.path.join(self._config_dir, MCP_CONFIG_FILE)
 
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """Validate config values. Returns list of error messages (empty = valid)."""
-        errors: List[str] = []
+        errors: list[str] = []
         if not (0.0 <= self.provider.temperature <= 2.0):
             errors.append(f"temperature {self.provider.temperature} out of range [0, 2]")
         if self.provider.max_tokens <= 0:
@@ -80,6 +92,14 @@ class RikuganConfig:
             errors.append(f"context_window must be positive, got {self.provider.context_window}")
         if not (1 <= self.max_retries <= 10):
             errors.append(f"max_retries {self.max_retries} out of range [1, 10]")
+        if not self.active_profile or not isinstance(self.active_profile, str):
+            errors.append("active_profile must be a non-empty string")
+        if not isinstance(self.custom_profiles, dict):
+            errors.append("custom_profiles must be a dict")
+        else:
+            for k, v in self.custom_profiles.items():
+                if not isinstance(v, dict):
+                    errors.append(f"custom_profiles['{k}'] must be a dict")
         return errors
 
     def save(self) -> None:
@@ -105,7 +125,7 @@ class RikuganConfig:
     def load(self) -> None:
         if not os.path.exists(self.config_path):
             return
-        with open(self.config_path, "r") as f:
+        with open(self.config_path) as f:
             data = json.load(f)
         # Schema version check (for future migrations)
         _stored_version = data.pop("schema_version", 0)
@@ -115,10 +135,21 @@ class RikuganConfig:
                     setattr(self.provider, k, v)
         self.providers = data.get("providers", {})
         self.custom_providers = data.get("custom_providers", {})
-        for k in ("auto_context", "plan_mode_default",
-                   "checkpoint_auto_save", "approve_mutations",
-                   "exploration_turn_limit", "max_retries",
-                   "silent_retry_mode", "theme"):
+        for k in (
+            "auto_context",
+            "plan_mode_default",
+            "checkpoint_auto_save",
+            "approve_mutations",
+            "exploration_turn_limit",
+            "max_retries",
+            "silent_retry_mode",
+            "theme",
+            "disabled_skills",
+            "enabled_external_skills",
+            "enabled_external_mcp",
+            "active_profile",
+            "custom_profiles",
+        ):
             if k in data:
                 setattr(self, k, data[k])
 
@@ -172,8 +203,14 @@ class RikuganConfig:
     def is_custom_provider(self, name: str) -> bool:
         return name in self.custom_providers
 
+    def get_active_profile(self) -> AnalysisProfile:
+        """Return the currently active AnalysisProfile."""
+        from .profile import get_profile
+
+        return get_profile(self.active_profile, self.custom_profiles)
+
     @classmethod
-    def load_or_create(cls) -> "RikuganConfig":
+    def load_or_create(cls) -> RikuganConfig:
         cfg = cls()
         cfg.load()
         return cfg

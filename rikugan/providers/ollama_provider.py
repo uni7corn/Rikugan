@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from typing import Any, Dict, List, Tuple
 
 from ..core.logging import log_debug
 from ..core.types import ModelInfo, ProviderCapabilities
@@ -27,25 +26,31 @@ class OllamaProvider(OpenAICompatProvider):
         api_key = api_key or "ollama"
         api_base = api_base or os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL)
         super().__init__(
-            api_key=api_key, api_base=api_base, model=model,
-            provider_name="ollama", **kwargs,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+            provider_name="ollama",
+            **kwargs,
         )
 
     @property
     def name(self) -> str:
         return "ollama"
 
-    def auth_status(self) -> Tuple[str, str]:
+    def auth_status(self) -> tuple[str, str]:
         return "Local", "ok"
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            streaming=True, tool_use=True, vision=False,
-            max_context_window=128000, max_output_tokens=4096,
+            streaming=True,
+            tool_use=True,
+            vision=False,
+            max_context_window=128000,
+            max_output_tokens=4096,
         )
 
-    def list_models(self) -> List[ModelInfo]:
+    def list_models(self) -> list[ModelInfo]:
         """Try to list models from the Ollama API."""
         try:
             base = self.api_base.removesuffix("/v1").rstrip("/")

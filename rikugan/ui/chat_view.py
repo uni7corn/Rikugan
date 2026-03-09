@@ -4,22 +4,31 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Dict, List, Optional
 
-_THINKING_MIN_DISPLAY_MS = 500
-
-from .qt_compat import (
-    QScrollArea, QVBoxLayout, QWidget, QSizePolicy, QTimer, Qt, Signal,
-)
-from .message_widgets import (
-    AssistantMessageWidget, ErrorMessageWidget, ExplorationFindingWidget,
-    ExplorationPhaseWidget, QueuedMessageWidget,
-    ThinkingWidget, UserMessageWidget, UserQuestionWidget,
-)
-from .tool_widgets import ToolApprovalWidget, ToolCallWidget, ToolGroupWidget
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.types import Message, Role
+from .message_widgets import (
+    AssistantMessageWidget,
+    ErrorMessageWidget,
+    ExplorationFindingWidget,
+    ExplorationPhaseWidget,
+    QueuedMessageWidget,
+    ThinkingWidget,
+    UserMessageWidget,
+    UserQuestionWidget,
+)
 from .plan_view import PlanView
+from .qt_compat import (
+    QScrollArea,
+    Qt,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+)
+from .tool_widgets import ToolApprovalWidget, ToolCallWidget, ToolGroupWidget
+
+_THINKING_MIN_DISPLAY_MS = 500
 
 # Collapse consecutive tool runs once they reach this many calls.
 # A single tool call is shown inline with its name visible;
@@ -38,7 +47,7 @@ class ChatView(QScrollArea):
     """Scrollable chat area that renders TurnEvents into widgets."""
 
     tool_approval_submitted = Signal(str, str)  # (tool_call_id, "allow"/"deny")
-    user_answer_submitted = Signal(str)          # chosen option / typed answer
+    user_answer_submitted = Signal(str)  # chosen option / typed answer
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -55,20 +64,20 @@ class ChatView(QScrollArea):
         self.setWidget(self._container)
 
         # Track current assistant widget for streaming
-        self._current_assistant: Optional[AssistantMessageWidget] = None
-        self._tool_widgets: Dict[str, ToolCallWidget] = {}
-        self._thinking: Optional[ThinkingWidget] = None
+        self._current_assistant: AssistantMessageWidget | None = None
+        self._tool_widgets: dict[str, ToolCallWidget] = {}
+        self._thinking: ThinkingWidget | None = None
         self._thinking_shown_at: float = 0.0
-        self._plan_view: Optional[PlanView] = None
+        self._plan_view: PlanView | None = None
 
         # Consecutive tool run state (collapsed when threshold is reached)
-        self._tool_run_ids: List[str] = []
-        self._tool_run_names: List[str] = []
-        self._tool_run_widgets: List[ToolCallWidget] = []
+        self._tool_run_ids: list[str] = []
+        self._tool_run_names: list[str] = []
+        self._tool_run_widgets: list[ToolCallWidget] = []
         # Active collapsible group for the current run
-        self._tool_group: Optional[ToolGroupWidget] = None
+        self._tool_group: ToolGroupWidget | None = None
         # Map tool_call_id -> group it belongs to (for result routing/status)
-        self._group_map: Dict[str, ToolGroupWidget] = {}
+        self._group_map: dict[str, ToolGroupWidget] = {}
 
         # Member timer for scroll-to-bottom
         self._scroll_timer = QTimer(self)
@@ -146,9 +155,7 @@ class ChatView(QScrollArea):
         self._tool_run_names.clear()
         self._tool_run_widgets.clear()
 
-    def _register_tool_widget(
-        self, tool_name: str, tool_id: str, widget: ToolCallWidget
-    ) -> None:
+    def _register_tool_widget(self, tool_name: str, tool_id: str, widget: ToolCallWidget) -> None:
         """Attach a new tool widget to the current run, collapsing at threshold."""
         self._tool_run_ids.append(tool_id)
         self._tool_run_names.append(tool_name)
@@ -178,8 +185,9 @@ class ChatView(QScrollArea):
 
         # Already collapsed: add new call directly to existing group.
         widget.hide_preview()
-        self._tool_group.add_widget(widget, tool_name)
-        self._group_map[tool_id] = self._tool_group
+        if self._tool_group is not None:
+            self._tool_group.add_widget(widget, tool_name)
+            self._group_map[tool_id] = self._tool_group
 
     def handle_event(self, event: TurnEvent) -> None:
         """Process a TurnEvent and update the UI accordingly."""
@@ -187,20 +195,34 @@ class ChatView(QScrollArea):
         if etype in (TurnEventType.TEXT_DELTA, TurnEventType.TEXT_DONE):
             self._handle_text_event(event)
         elif etype in (
-            TurnEventType.TOOL_CALL_START, TurnEventType.TOOL_CALL_ARGS_DELTA,
-            TurnEventType.TOOL_CALL_DONE, TurnEventType.TOOL_RESULT,
+            TurnEventType.TOOL_CALL_START,
+            TurnEventType.TOOL_CALL_ARGS_DELTA,
+            TurnEventType.TOOL_CALL_DONE,
+            TurnEventType.TOOL_RESULT,
             TurnEventType.TOOL_APPROVAL_REQUEST,
         ):
             self._handle_tool_event(event)
-        elif etype in (TurnEventType.TURN_START, TurnEventType.TURN_END, TurnEventType.CANCELLED):
+        elif etype in (
+            TurnEventType.TURN_START,
+            TurnEventType.TURN_END,
+            TurnEventType.CANCELLED,
+        ):
             self._handle_lifecycle_event(event)
         elif etype in (
-            TurnEventType.PLAN_GENERATED, TurnEventType.PLAN_STEP_START, TurnEventType.PLAN_STEP_DONE,
+            TurnEventType.PLAN_GENERATED,
+            TurnEventType.PLAN_STEP_START,
+            TurnEventType.PLAN_STEP_DONE,
         ):
             self._handle_plan_event(event)
-        elif etype in (TurnEventType.EXPLORATION_PHASE_CHANGE, TurnEventType.EXPLORATION_FINDING):
+        elif etype in (
+            TurnEventType.EXPLORATION_PHASE_CHANGE,
+            TurnEventType.EXPLORATION_FINDING,
+        ):
             self._handle_exploration_event(event)
-        elif etype in (TurnEventType.USER_QUESTION, TurnEventType.SAVE_APPROVAL_REQUEST):
+        elif etype in (
+            TurnEventType.USER_QUESTION,
+            TurnEventType.SAVE_APPROVAL_REQUEST,
+        ):
             self._handle_question_event(event)
         elif etype == TurnEventType.ERROR:
             self._hide_thinking()
@@ -231,18 +253,18 @@ class ChatView(QScrollArea):
             self._register_tool_widget(event.tool_name, event.tool_call_id, tw)
             self._scroll_to_bottom()
         elif etype == TurnEventType.TOOL_CALL_ARGS_DELTA:
-            tw = self._tool_widgets.get(event.tool_call_id)
-            if tw:
-                tw.append_args_delta(event.tool_args)
+            existing_tw = self._tool_widgets.get(event.tool_call_id)
+            if existing_tw is not None:
+                existing_tw.append_args_delta(event.tool_args)
         elif etype == TurnEventType.TOOL_CALL_DONE:
-            tw = self._tool_widgets.get(event.tool_call_id)
-            if tw:
-                tw.set_arguments(event.tool_args)
+            existing_tw = self._tool_widgets.get(event.tool_call_id)
+            if existing_tw is not None:
+                existing_tw.set_arguments(event.tool_args)
         elif etype == TurnEventType.TOOL_RESULT:
             self._reset_tool_run()
-            tw = self._tool_widgets.get(event.tool_call_id)
-            if tw:
-                tw.set_result(event.tool_result, event.tool_is_error)
+            existing_tw = self._tool_widgets.get(event.tool_call_id)
+            if existing_tw is not None:
+                existing_tw.set_result(event.tool_result, event.tool_is_error)
             group = self._group_map.get(event.tool_call_id)
             if group:
                 group.notify_result(event.tool_is_error)
@@ -251,7 +273,10 @@ class ChatView(QScrollArea):
             self._hide_thinking()
             self._reset_tool_run()
             widget = ToolApprovalWidget(
-                event.tool_call_id, event.tool_name, event.tool_args, event.text,
+                event.tool_call_id,
+                event.tool_name,
+                event.tool_args,
+                event.text,
             )
             widget.approved.connect(self._on_tool_approval)
             self._insert_widget(widget)
@@ -283,12 +308,15 @@ class ChatView(QScrollArea):
             self._plan_view = PlanView()
             if event.plan_steps:
                 self._plan_view.set_plan(event.plan_steps)
+
             def _on_plan_approve(pv=self._plan_view):
                 pv.set_buttons_visible(False)
                 self._on_user_answer("approve")
+
             def _on_plan_reject(pv=self._plan_view):
                 pv.set_buttons_visible(False)
                 self._on_user_answer("reject")
+
             self._plan_view.set_approved_callback(_on_plan_approve)
             self._plan_view.set_rejected_callback(_on_plan_reject)
             self._insert_widget(self._plan_view)
@@ -308,14 +336,22 @@ class ChatView(QScrollArea):
         if event.type == TurnEventType.EXPLORATION_PHASE_CHANGE:
             self._hide_thinking()
             self._reset_tool_run()
-            self._insert_widget(ExplorationPhaseWidget(
-                meta.get("from_phase", ""), meta.get("to_phase", ""), event.text,
-            ))
+            self._insert_widget(
+                ExplorationPhaseWidget(
+                    meta.get("from_phase", ""),
+                    meta.get("to_phase", ""),
+                    event.text,
+                )
+            )
         else:  # EXPLORATION_FINDING
-            self._insert_widget(ExplorationFindingWidget(
-                meta.get("category", "general"), event.text,
-                meta.get("address"), meta.get("relevance", "medium"),
-            ))
+            self._insert_widget(
+                ExplorationFindingWidget(
+                    meta.get("category", "general"),
+                    event.text,
+                    meta.get("address"),
+                    meta.get("relevance", "medium"),
+                )
+            )
         self._scroll_to_bottom()
 
     def _handle_question_event(self, event: TurnEvent) -> None:
@@ -338,7 +374,7 @@ class ChatView(QScrollArea):
         """Forward a button-selected answer to the panel/controller."""
         self.user_answer_submitted.emit(answer)
 
-    def restore_from_messages(self, messages: List[Message]) -> None:
+    def restore_from_messages(self, messages: list[Message]) -> None:
         """Replay saved Message objects into the chat view."""
         self.clear_chat()
 
@@ -370,9 +406,9 @@ class ChatView(QScrollArea):
             elif msg.role == Role.TOOL:
                 self._reset_tool_run()
                 for tr in msg.tool_results:
-                    tw = self._tool_widgets.get(tr.tool_call_id)
-                    if tw:
-                        tw.set_result(tr.content, tr.is_error)
+                    existing_tw = self._tool_widgets.get(tr.tool_call_id)
+                    if existing_tw is not None:
+                        existing_tw.set_result(tr.content, tr.is_error)
                     group = self._group_map.get(tr.tool_call_id)
                     if group:
                         group.notify_result(tr.is_error)

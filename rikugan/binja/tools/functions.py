@@ -7,15 +7,14 @@ from typing import Annotated
 from ...core.logging import log_debug
 from ...tools.base import tool
 from ...tools.functions import format_function_summary
-from .common import (
+from .compat import parse_addr_like, require_bv
+from .disasm_utils import get_instruction_len
+from .fn_utils import (
     get_function_at,
     get_function_end,
     get_function_name,
-    get_instruction_len,
     iter_function_instruction_addresses,
     iter_functions,
-    parse_addr_like,
-    require_bv,
 )
 
 
@@ -52,7 +51,7 @@ def list_functions(
     bv = require_bv()
     funcs = iter_functions(bv)
     total = len(funcs)
-    page = funcs[offset:offset + limit]
+    page = funcs[offset : offset + limit]
 
     lines = [f"Functions {offset}\u2013{offset + len(page)} of {total}:"]
     for f in page:

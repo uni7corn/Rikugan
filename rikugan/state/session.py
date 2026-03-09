@@ -7,11 +7,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Set
 
 from ..core.logging import log_debug
 from ..core.sanitize import strip_injection_markers
-from ..core.types import Message, Role, ToolResult, TokenUsage
+from ..core.types import Message, Role, TokenUsage, ToolResult
 
 # ---------- Token estimation ----------
 
@@ -61,7 +60,7 @@ class SessionState:
 
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
-    messages: List[Message] = field(default_factory=list)
+    messages: list[Message] = field(default_factory=list)
     total_usage: TokenUsage = field(default_factory=TokenUsage)
     last_prompt_tokens: int = 0
     current_turn: int = 0
@@ -70,10 +69,10 @@ class SessionState:
     model_name: str = ""
     idb_path: str = ""
     db_instance_id: str = ""
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, str] = field(default_factory=dict)
     # Subagent message logs, keyed by the spawn_subagent tool_call_id.
     # Stored separately from main messages to avoid burning context tokens.
-    subagent_logs: Dict[str, List[Message]] = field(default_factory=dict)
+    subagent_logs: dict[str, list[Message]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -125,7 +124,7 @@ class SessionState:
             self.messages[:] = head + tail
             return removed
 
-    def get_messages_for_provider(self, context_window: int = 0) -> List[Message]:
+    def get_messages_for_provider(self, context_window: int = 0) -> list[Message]:
         """Return messages sanitized and trimmed for the provider API.
 
         1. Ensures every tool_use has a matching tool_result.
@@ -146,7 +145,7 @@ class SessionState:
     # --- Internal helpers ---
 
     @staticmethod
-    def _sanitize_assistant_output(messages: List[Message]) -> List[Message]:
+    def _sanitize_assistant_output(messages: list[Message]) -> list[Message]:
         """Strip injection markers from assistant text (anti self-injection).
 
         The model may reconstruct filtered strings in its own response —
@@ -154,7 +153,7 @@ class SessionState:
         This prevents those strings from re-entering the context on
         subsequent turns while leaving the displayed message untouched.
         """
-        result: List[Message] = []
+        result: list[Message] = []
         for msg in messages:
             if msg.role == Role.ASSISTANT and msg.content:
                 cleaned = strip_injection_markers(msg.content)
@@ -165,47 +164,52 @@ class SessionState:
         return result
 
     @staticmethod
-    def _sanitize(msgs: List[Message]) -> List[Message]:
+    def _sanitize(msgs: list[Message]) -> list[Message]:
         """Patch orphaned tool_use blocks with synthetic error results."""
-        sanitized: List[Message] = []
+        sanitized: list[Message] = []
         i = 0
         while i < len(msgs):
             msg = msgs[i]
             if msg.role == Role.ASSISTANT and msg.tool_calls:
                 sanitized.append(msg)
                 i += 1
-                needed_ids: Set[str] = {tc.id for tc in msg.tool_calls}
+                needed_ids: set[str] = {tc.id for tc in msg.tool_calls}
                 if i < len(msgs) and msgs[i].role == Role.TOOL:
                     tool_msg = msgs[i]
                     found_ids = {tr.tool_call_id for tr in tool_msg.tool_results}
                     missing = needed_ids - found_ids
                     if missing:
-                        log_debug(
-                            f"Sanitize: patching {len(missing)} orphaned tool_use(s): "
-                            f"{', '.join(missing)}"
-                        )
+                        log_debug(f"Sanitize: patching {len(missing)} orphaned tool_use(s): {', '.join(missing)}")
                         patched_results = list(tool_msg.tool_results)
                         for tc in msg.tool_calls:
                             if tc.id in missing:
-                                patched_results.append(ToolResult(
-                                    tool_call_id=tc.id, name=tc.name,
-                                    content="Cancelled.", is_error=True,
-                                ))
-                        sanitized.append(Message(
-                            role=Role.TOOL, tool_results=patched_results,
-                        ))
+                                patched_results.append(
+                                    ToolResult(
+                                        tool_call_id=tc.id,
+                                        name=tc.name,
+                                        content="Cancelled.",
+                                        is_error=True,
+                                    )
+                                )
+                        sanitized.append(
+                            Message(
+                                role=Role.TOOL,
+                                tool_results=patched_results,
+                            )
+                        )
                     else:
                         sanitized.append(tool_msg)
                     i += 1
                 else:
                     log_debug(
-                        f"Sanitize: no tool_result message for "
-                        f"{len(msg.tool_calls)} tool_use(s), inserting stubs"
+                        f"Sanitize: no tool_result message for {len(msg.tool_calls)} tool_use(s), inserting stubs"
                     )
                     stubs = [
                         ToolResult(
-                            tool_call_id=tc.id, name=tc.name,
-                            content="Cancelled.", is_error=True,
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                            content="Cancelled.",
+                            is_error=True,
                         )
                         for tc in msg.tool_calls
                     ]
@@ -216,10 +220,10 @@ class SessionState:
         return sanitized
 
     @staticmethod
-    def _truncate_results(messages: List[Message]) -> List[Message]:
+    def _truncate_results(messages: list[Message]) -> list[Message]:
         """Truncate tool results — aggressively for old, moderately for recent."""
         n = len(messages)
-        result: List[Message] = []
+        result: list[Message] = []
         for idx, msg in enumerate(messages):
             if msg.role != Role.TOOL or not msg.tool_results:
                 result.append(msg)
@@ -231,7 +235,7 @@ class SessionState:
         return result
 
     @staticmethod
-    def _trim_to_budget(messages: List[Message], context_window: int) -> List[Message]:
+    def _trim_to_budget(messages: list[Message], context_window: int) -> list[Message]:
         """Drop oldest messages if estimated tokens exceed context budget."""
         # Reserve 25% for system prompt + new completion
         budget = int(context_window * 0.75)

@@ -11,7 +11,7 @@ from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
 from rikugan.agent.turn import TurnEvent, TurnEventType
-from rikugan.agent.plan_mode import parse_plan, create_plan_from_text, PlanStepStatus
+from rikugan.agent.plan_mode import parse_plan, create_plan_from_text
 from rikugan.agent.context_window import ContextWindowManager
 from rikugan.core.types import Message, Role, TokenUsage
 from rikugan.core.config import RikuganConfig

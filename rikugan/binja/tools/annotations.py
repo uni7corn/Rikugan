@@ -6,16 +6,11 @@ from typing import Annotated
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import (
-    get_function_at,
-    get_function_name,
-    parse_addr_like,
-    parse_type_string,
-    py_signature_accepts,
-    rename_symbol_at,
-    require_bv,
-    set_comment_at,
-)
+from .comment_utils import set_comment_at
+from .compat import parse_addr_like, py_signature_accepts, require_bv
+from .fn_utils import get_function_at, get_function_name
+from .sym_utils import rename_symbol_at
+from .type_utils import parse_type_string
 
 
 def _set_function_type(func, t) -> bool:
@@ -29,7 +24,7 @@ def _set_function_type(func, t) -> bool:
                 log_debug(f"_set_function_type {name} failed: {e}")
                 continue
     try:
-        setattr(func, "type", t)
+        func.type = t
         return True
     except Exception as e:
         log_debug(f"_set_function_type setattr failed: {e}")
@@ -55,7 +50,7 @@ def rename_function(
 
     # Fallback on direct property if available.
     try:
-        setattr(func, "name", new_name)
+        func.name = new_name
         return f"Renamed 0x{start:x}: {old_name} \u2192 {new_name}"
     except Exception:
         return f"Failed to rename function at 0x{start:x}"
@@ -164,7 +159,7 @@ def set_function_comment(
                 continue
 
     try:
-        setattr(func, "comment", comment)
+        func.comment = comment
         return f"Set function comment at 0x{int(getattr(func, 'start', ea)):x}"
     except Exception as e:
         log_debug(f"set_function_comment setattr failed: {e}")

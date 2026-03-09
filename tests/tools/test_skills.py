@@ -12,7 +12,6 @@ from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
 from rikugan.skills.loader import (
-    SkillDefinition,
     _parse_frontmatter,
     _split_frontmatter,
     discover_skills,

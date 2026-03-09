@@ -2,21 +2,7 @@
 
 from __future__ import annotations
 
-from .base import (
-    ANALYSIS_SECTION,
-    ANTI_REDUNDANCY_SECTION,
-    CLOSING_SECTION,
-    DATA_INTEGRITY_SECTION,
-    DISCIPLINE_SECTION,
-    MUTATION_PLANNING_SECTION,
-    OBFUSCATION_AWARENESS_SECTION,
-    PARALLEL_BATCHING_SECTION,
-    PERSISTENT_MEMORY_SECTION,
-    RENAMING_SECTION,
-    SAFETY_SECTION,
-    SHARED_CAPABILITIES_BULLETS,
-    TOKEN_EFFICIENCY_SECTION,
-)
+from .base import SHARED_CAPABILITIES_BULLETS, assemble_system_prompt
 
 _IDA_INTRO = """\
 You are Rikugan (六眼) -- a reverse engineering companion living inside IDA Pro.
@@ -54,8 +40,7 @@ built-in tools over execute_python (IDAPython scripting).
 
 _IDA_CAPABILITIES = (
     "## Capabilities\n"
-    "You have direct access to the IDA database through purpose-built tools:\n"
-    + SHARED_CAPABILITIES_BULLETS + "\n"
+    "You have direct access to the IDA database through purpose-built tools:\n" + SHARED_CAPABILITIES_BULLETS + "\n"
     "- Read microcode at any maturity level (MMAT_GENERATED through MMAT_LVARS)\n"
     "- NOP junk microcode instructions to clean decompiler output\n"
     "- Install custom Python microcode optimizers (instruction-level or block-level)\n"
@@ -63,34 +48,4 @@ _IDA_CAPABILITIES = (
     "- Execute Python scripts as a last resort when no built-in tool fits\n"
 )
 
-IDA_BASE_PROMPT = (
-    _IDA_INTRO
-    + "\n"
-    + _IDA_TOOL_USAGE
-    + "\n"
-    + _IDA_CAPABILITIES
-    + "\n"
-    + DISCIPLINE_SECTION
-    + "\n"
-    + ANTI_REDUNDANCY_SECTION
-    + "\n"
-    + PARALLEL_BATCHING_SECTION
-    + "\n"
-    + RENAMING_SECTION
-    + "\n"
-    + MUTATION_PLANNING_SECTION
-    + "\n"
-    + ANALYSIS_SECTION
-    + "\n"
-    + OBFUSCATION_AWARENESS_SECTION
-    + "\n"
-    + SAFETY_SECTION
-    + "\n"
-    + DATA_INTEGRITY_SECTION
-    + "\n"
-    + TOKEN_EFFICIENCY_SECTION
-    + "\n"
-    + PERSISTENT_MEMORY_SECTION
-    + "\n"
-    + CLOSING_SECTION
-)
+IDA_BASE_PROMPT = assemble_system_prompt(_IDA_INTRO, _IDA_TOOL_USAGE, _IDA_CAPABILITIES)

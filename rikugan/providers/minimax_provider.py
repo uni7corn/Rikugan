@@ -10,12 +10,12 @@ Auth:      plain API key (no OAuth)
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..core.errors import AuthenticationError, ProviderError
 from ..core.types import ModelInfo, ProviderCapabilities
-from .base import LLMProvider
 from .anthropic_provider import AnthropicProvider
+from .base import LLMProvider
 
 
 class MiniMaxProvider(AnthropicProvider):
@@ -23,7 +23,13 @@ class MiniMaxProvider(AnthropicProvider):
 
     DEFAULT_API_BASE = "https://api.minimax.io/anthropic"
 
-    def __init__(self, api_key: str = "", api_base: str = "", model: str = "MiniMax-M2.5", **kwargs):
+    def __init__(
+        self,
+        api_key: str = "",
+        api_base: str = "",
+        model: str = "MiniMax-M2.5",
+        **kwargs,
+    ):
         # Bypass AnthropicProvider.__init__ — MiniMax uses plain API keys only,
         # no OAuth keychain lookup.
         LLMProvider.__init__(
@@ -54,11 +60,11 @@ class MiniMaxProvider(AnthropicProvider):
         if self._client is None:
             try:
                 anthropic = importlib.import_module("anthropic")
-            except ImportError:
+            except ImportError as exc:
                 raise ProviderError(
                     "anthropic package not installed. Run: pip install anthropic",
                     provider="minimax",
-                )
+                ) from exc
             if not self.api_key:
                 raise AuthenticationError(provider="minimax")
             self._client = anthropic.Anthropic(
@@ -73,16 +79,51 @@ class MiniMaxProvider(AnthropicProvider):
         return "", "none"
 
     @staticmethod
-    def _builtin_models() -> List[ModelInfo]:
+    def _builtin_models() -> list[ModelInfo]:
         return [
-            ModelInfo(id="MiniMax-M2.5", name="MiniMax M2.5", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
-            ModelInfo(id="MiniMax-M2.5-highspeed", name="MiniMax M2.5 Highspeed", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
-            ModelInfo(id="MiniMax-M2.1", name="MiniMax M2.1", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
-            ModelInfo(id="MiniMax-M2.1-highspeed", name="MiniMax M2.1 Highspeed", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
-            ModelInfo(id="MiniMax-M2", name="MiniMax M2", provider="minimax", context_window=204800, max_output_tokens=8192, supports_tools=True),
+            ModelInfo(
+                id="MiniMax-M2.5",
+                name="MiniMax M2.5",
+                provider="minimax",
+                context_window=204800,
+                max_output_tokens=8192,
+                supports_tools=True,
+            ),
+            ModelInfo(
+                id="MiniMax-M2.5-highspeed",
+                name="MiniMax M2.5 Highspeed",
+                provider="minimax",
+                context_window=204800,
+                max_output_tokens=8192,
+                supports_tools=True,
+            ),
+            ModelInfo(
+                id="MiniMax-M2.1",
+                name="MiniMax M2.1",
+                provider="minimax",
+                context_window=204800,
+                max_output_tokens=8192,
+                supports_tools=True,
+            ),
+            ModelInfo(
+                id="MiniMax-M2.1-highspeed",
+                name="MiniMax M2.1 Highspeed",
+                provider="minimax",
+                context_window=204800,
+                max_output_tokens=8192,
+                supports_tools=True,
+            ),
+            ModelInfo(
+                id="MiniMax-M2",
+                name="MiniMax M2",
+                provider="minimax",
+                context_window=204800,
+                max_output_tokens=8192,
+                supports_tools=True,
+            ),
         ]
 
-    def _fetch_models_live(self) -> List[ModelInfo]:
+    def _fetch_models_live(self) -> list[ModelInfo]:
         try:
             client = self._get_client()
             response = client.models.list(limit=50)
@@ -105,11 +146,11 @@ class MiniMaxProvider(AnthropicProvider):
     def _build_request_kwargs(
         self,
         messages,
-        tools: Optional[List[Dict[str, Any]]],
+        tools: list[dict[str, Any]] | None,
         temperature: float,
         max_tokens: int,
         system: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build request kwargs, stripping cache_control (not supported by MiniMax)."""
         kwargs = super()._build_request_kwargs(messages, tools, temperature, max_tokens, system)
 

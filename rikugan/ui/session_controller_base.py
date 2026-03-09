@@ -7,18 +7,20 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
+from ..agent.loop import AgentLoop, BackgroundAgentRunner
+from ..agent.turn import TurnEvent
 from ..core.config import RikuganConfig
 from ..core.host import get_database_instance_id, set_database_instance_id
 from ..core.logging import log_debug, log_error, log_info
-from ..agent.loop import AgentLoop, BackgroundAgentRunner
-from ..agent.turn import TurnEvent
+from ..mcp.manager import MCPManager
 from ..providers.registry import ProviderRegistry
 from ..skills.registry import SkillRegistry
-from ..mcp.manager import MCPManager
-from ..state.session import SessionState
 from ..state.history import SessionHistory
+from ..state.session import SessionState
+
 if TYPE_CHECKING:
     from ..tools.registry import ToolRegistry
 else:
@@ -47,9 +49,7 @@ class SessionControllerBase:
         self.config = config
         self.host_name = host_name
         self._provider_registry = ProviderRegistry()
-        self._provider_registry.register_custom_providers(
-            list(config.custom_providers.keys())
-        )
+        self._provider_registry.register_custom_providers(list(config.custom_providers.keys()))
         self._tool_registry = tool_registry_factory()
         self._skill_registry = SkillRegistry()
         self._mcp_manager = MCPManager()
@@ -65,13 +65,13 @@ class SessionControllerBase:
         self._runtime_init_thread.start()
 
         # Multi-tab session management
-        self._sessions: Dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = {}
         self._active_tab_id: str = ""
         tab_id = self._create_session()
         self._active_tab_id = tab_id
 
-        self._runner: Optional[BackgroundAgentRunner] = None
-        self._pending_messages: List[str] = []
+        self._runner: BackgroundAgentRunner | None = None
+        self._pending_messages: list[str] = []
 
     def _initialize_runtime(self) -> None:
         """Load heavy runtime components off the UI path."""
@@ -81,9 +81,26 @@ class SessionControllerBase:
                 return
             self._skill_registry.discover()
 
+            # Apply disabled skills + load enabled external skills
+            self._skill_registry.load_external_skills(
+                self.config.enabled_external_skills,
+                self.config.disabled_skills,
+            )
+
             if self._runtime_shutdown.is_set():
                 return
             self._mcp_manager.load_config()
+
+            # Load enabled external MCP servers
+            from ..core.external_sources import discover_all_external_mcp
+
+            external_mcp = discover_all_external_mcp()
+            enabled_set = set(self.config.enabled_external_mcp)
+            if enabled_set:
+                for source_key, servers in external_mcp.items():
+                    enabled = [s for s in servers if f"{source_key}:{s.name}" in enabled_set]
+                    if enabled:
+                        self._mcp_manager.add_external_configs(enabled)
 
             if self._runtime_shutdown.is_set():
                 return
@@ -132,7 +149,7 @@ class SessionControllerBase:
         log_info(f"Created new tab {tab_id}")
         return tab_id
 
-    def fork_session(self, source_tab_id: str) -> Optional[str]:
+    def fork_session(self, source_tab_id: str) -> str | None:
         """Duplicate a session into a new tab. Returns new tab_id or None."""
         source = self._sessions.get(source_tab_id)
         if source is None:
@@ -195,14 +212,14 @@ class SessionControllerBase:
         return self._active_tab_id
 
     @property
-    def tab_ids(self) -> List[str]:
+    def tab_ids(self) -> list[str]:
         return list(self._sessions.keys())
 
     @property
     def session(self) -> SessionState:
         return self._sessions[self._active_tab_id]
 
-    def get_session(self, tab_id: str) -> Optional[SessionState]:
+    def get_session(self, tab_id: str) -> SessionState | None:
         return self._sessions.get(tab_id)
 
     @property
@@ -210,7 +227,11 @@ class SessionControllerBase:
         return self._provider_registry
 
     @property
-    def skill_slugs(self) -> List[str]:
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
+
+    @property
+    def skill_slugs(self) -> list[str]:
         if not self._runtime_init_done.is_set():
             return []
         return self._skill_registry.list_slugs()
@@ -223,10 +244,10 @@ class SessionControllerBase:
     def is_agent_running(self) -> bool:
         return self._runner is not None and self._runner.agent_loop.is_running
 
-    def get_runner(self) -> Optional[BackgroundAgentRunner]:
+    def get_runner(self) -> BackgroundAgentRunner | None:
         return self._runner
 
-    def start_agent(self, user_message: str) -> Optional[str]:
+    def start_agent(self, user_message: str) -> str | None:
         """Create provider + agent loop and start the background runner."""
         if not self._runtime_init_done.is_set():
             # Delay only the first agent start if background init is still running.
@@ -256,7 +277,7 @@ class SessionControllerBase:
         self._runner.start(user_message)
         return None
 
-    def get_event(self, timeout: float = 0) -> Optional[TurnEvent]:
+    def get_event(self, timeout: float = 0) -> TurnEvent | None:
         if self._runner is None:
             return None
         return self._runner.get_event(timeout=timeout)
@@ -308,9 +329,9 @@ class SessionControllerBase:
         )
         log_info("Started new chat session (active tab)")
 
-    def restore_sessions(self) -> List[Tuple[str, SessionState]]:
+    def restore_sessions(self) -> list[tuple[str, SessionState]]:
         """Load ALL saved sessions for the current idb_path and return (tab_id, session) pairs."""
-        results: List[Tuple[str, SessionState]] = []
+        results: list[tuple[str, SessionState]] = []
         if not self._idb_path:
             log_debug("Skipping session restore: no database path available")
             return results
@@ -340,7 +361,7 @@ class SessionControllerBase:
             self._active_tab_id = results[-1][0]  # most recent
         return results
 
-    def restore_session(self) -> Optional[SessionState]:
+    def restore_session(self) -> SessionState | None:
         """Legacy: restore only the latest session into the active tab."""
         if not self._idb_path:
             log_debug("Skipping session restore: no database path available")
@@ -378,9 +399,7 @@ class SessionControllerBase:
 
     def update_settings(self) -> None:
         # Re-register custom providers in case user added/removed one
-        self._provider_registry.register_custom_providers(
-            list(self.config.custom_providers.keys())
-        )
+        self._provider_registry.register_custom_providers(list(self.config.custom_providers.keys()))
         for session in self._sessions.values():
             session.provider_name = self.config.provider.name
             session.model_name = self.config.provider.model

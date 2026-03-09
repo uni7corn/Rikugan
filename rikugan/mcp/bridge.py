@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 from ..constants import MCP_TOOL_PREFIX
-from ..core.logging import log_debug, log_info
+from ..core.logging import log_info
 from ..tools.base import ParameterSchema, ToolDefinition
 from ..tools.registry import ToolRegistry
-from .client import MCPClient, MCPToolSchema
+from .client import MCPClient
 
 
-def _mcp_schema_to_parameters(input_schema: Dict[str, Any]) -> List[ParameterSchema]:
+def _mcp_schema_to_parameters(input_schema: dict[str, Any]) -> list[ParameterSchema]:
     """Convert a JSON Schema object to a list of ParameterSchema."""
-    params: List[ParameterSchema] = []
+    params: list[ParameterSchema] = []
 
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))

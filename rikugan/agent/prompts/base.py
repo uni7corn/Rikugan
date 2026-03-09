@@ -195,3 +195,38 @@ SHARED_CAPABILITIES_BULLETS = """\
 - Create and modify structs, enums, and typedefs
 - Suggest struct layouts from pointer access patterns
 - Apply type information and propagate changes"""
+
+
+def assemble_system_prompt(intro: str, tool_usage: str, capabilities: str) -> str:
+    """Assemble a full system prompt from host-specific sections + shared sections."""
+    return (
+        intro
+        + "\n"
+        + tool_usage
+        + "\n"
+        + capabilities
+        + "\n"
+        + DISCIPLINE_SECTION
+        + "\n"
+        + ANTI_REDUNDANCY_SECTION
+        + "\n"
+        + PARALLEL_BATCHING_SECTION
+        + "\n"
+        + RENAMING_SECTION
+        + "\n"
+        + MUTATION_PLANNING_SECTION
+        + "\n"
+        + ANALYSIS_SECTION
+        + "\n"
+        + OBFUSCATION_AWARENESS_SECTION
+        + "\n"
+        + SAFETY_SECTION
+        + "\n"
+        + DATA_INTEGRITY_SECTION
+        + "\n"
+        + TOKEN_EFFICIENCY_SECTION
+        + "\n"
+        + PERSISTENT_MEMORY_SECTION
+        + "\n"
+        + CLOSING_SECTION
+    )

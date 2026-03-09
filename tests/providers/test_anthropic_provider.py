@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
-from rikugan.core.types import Message, Role, ToolCall, ToolResult, TokenUsage
+from rikugan.core.types import Message, Role, ToolCall, ToolResult
 
 
 def _make_provider():

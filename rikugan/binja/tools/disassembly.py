@@ -5,18 +5,18 @@ from __future__ import annotations
 from typing import Annotated
 
 from ...tools.base import tool
-from .common import (
-    get_comment_at,
+from .comment_utils import get_comment_at
+from .compat import parse_addr_like, read_bytes_safe, require_bv
+from .disasm_utils import (
     get_disassembly_line,
-    get_function_at,
-    get_function_name,
     get_instruction_len,
     get_instruction_text_tokens,
-    iter_function_instruction_addresses,
-    parse_addr_like,
-    read_bytes_safe,
     render_tokens,
-    require_bv,
+)
+from .fn_utils import (
+    get_function_at,
+    get_function_name,
+    iter_function_instruction_addresses,
 )
 
 
@@ -71,7 +71,9 @@ def read_function_disassembly(
 
 
 @tool(category="disassembly")
-def get_instruction_info(address: Annotated[str, "Instruction address (hex string)"]) -> str:
+def get_instruction_info(
+    address: Annotated[str, "Instruction address (hex string)"],
+) -> str:
     """Get detailed info about a single instruction."""
     bv = require_bv()
     ea = parse_addr_like(address)
@@ -86,7 +88,7 @@ def get_instruction_info(address: Annotated[str, "Instruction address (hex strin
         size = 1
 
     mnemonic = text.split(None, 1)[0] if text.strip() else "?"
-    operands = text[len(mnemonic):].strip() if len(text) > len(mnemonic) else ""
+    operands = text[len(mnemonic) :].strip() if len(text) > len(mnemonic) else ""
 
     data = read_bytes_safe(bv, ea, size)
     byte_str = " ".join(f"{b:02x}" for b in data[:size])

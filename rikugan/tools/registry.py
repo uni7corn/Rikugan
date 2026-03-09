@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from typing import Any
 
+from ..constants import TOOL_RESULT_TRUNCATE_LEN
 from ..core.errors import ToolError, ToolNotFoundError, ToolValidationError
 from ..core.logging import log_debug
-from ..constants import TOOL_RESULT_TRUNCATE_LEN
 from .base import ToolDefinition
 from .cache import ToolResultCache
 
@@ -20,16 +22,25 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-timeout")
 
 
 class ToolRegistry:
-    """Central registry of all available tools."""
+    """Central registry of all available tools.
 
-    def __init__(self) -> None:
-        self._tools: Dict[str, ToolDefinition] = {}
-        self._schema_cache: Optional[List[Dict[str, Any]]] = None
+    Parameters
+    ----------
+    dispatch_wrapper : callable, optional
+        A wrapper applied around every tool handler at execution time to
+        marshal calls onto the correct thread.  Host-specific registries
+        pass ``idasync`` here; standalone/test environments omit it.
+    """
+
+    def __init__(self, dispatch_wrapper: Callable | None = None) -> None:
+        self._tools: dict[str, ToolDefinition] = {}
+        self._schema_cache: list[dict[str, Any]] | None = None
         self._result_cache = ToolResultCache()
-        self._capabilities: Dict[str, bool] = {}
+        self._capabilities: dict[str, bool] = {}
+        self._dispatch_wrapper = dispatch_wrapper
 
     @staticmethod
-    def _coerce_arguments(defn: ToolDefinition, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _coerce_arguments(defn: ToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:
         """Coerce mistyped tool arguments to match the schema.
 
         LLMs sometimes send integers as strings (e.g. "30" instead of 30).
@@ -97,7 +108,7 @@ class ToolRegistry:
             log_debug(f"Unregistered {len(to_remove)} tools with prefix {prefix!r}")
         return len(to_remove)
 
-    def set_capabilities(self, capabilities: Dict[str, bool]) -> None:
+    def set_capabilities(self, capabilities: dict[str, bool]) -> None:
         """Declare which host capabilities are available (e.g. hexrays, ida_struct)."""
         self._capabilities.update(capabilities)
         self._schema_cache = None  # invalidate — available tools may have changed
@@ -109,24 +120,21 @@ class ToolRegistry:
                 return False
         return True
 
-    def get(self, name: str) -> Optional[ToolDefinition]:
+    def get(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
-    def list_tools(self) -> List[ToolDefinition]:
+    def list_tools(self) -> list[ToolDefinition]:
         return list(self._tools.values())
 
-    def list_names(self) -> List[str]:
+    def list_names(self) -> list[str]:
         return list(self._tools.keys())
 
-    def to_provider_format(self) -> List[Dict[str, Any]]:
+    def to_provider_format(self) -> list[dict[str, Any]]:
         if self._schema_cache is None:
-            self._schema_cache = [
-                t.to_provider_format() for t in self._tools.values()
-                if self._available(t)
-            ]
+            self._schema_cache = [t.to_provider_format() for t in self._tools.values() if self._available(t)]
         return self._schema_cache
 
-    def execute(self, name: str, arguments: Dict[str, Any]) -> str:
+    def execute(self, name: str, arguments: dict[str, Any]) -> str:
         defn = self._tools.get(name)
         if defn is None:
             raise ToolNotFoundError(f"Unknown tool: {name}", tool_name=name)
@@ -148,20 +156,23 @@ class ToolRegistry:
 
         timeout = defn.timeout if defn.timeout is not None else _DEFAULT_TOOL_TIMEOUT
 
+        handler = defn.handler
+        if self._dispatch_wrapper is not None:
+            handler = self._dispatch_wrapper(handler)
+
         try:
-            future = _executor.submit(defn.handler, **arguments)
+            future = _executor.submit(handler, **arguments)
             result = future.result(timeout=timeout)
         except FuturesTimeoutError:
             future.cancel()
             raise ToolError(
-                f"Tool {name} timed out after {timeout}s", tool_name=name,
-            )
+                f"Tool {name} timed out after {timeout}s",
+                tool_name=name,
+            ) from None
         except (ToolError, ToolValidationError):
             raise
         except TypeError as e:
-            raise ToolValidationError(
-                f"Invalid arguments for {name}: {e}", tool_name=name
-            ) from e
+            raise ToolValidationError(f"Invalid arguments for {name}: {e}", tool_name=name) from e
         except Exception as e:
             raise ToolError(f"Tool {name} failed: {e}", tool_name=name) from e
 
@@ -185,4 +196,3 @@ class ToolRegistry:
         if isinstance(result, (dict, list)):
             return json.dumps(result, indent=2, default=str)
         return str(result)
-

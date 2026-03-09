@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Tuple
 
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_info
@@ -24,7 +23,7 @@ class SkillRegistry:
         if not skills_dir:
             skills_dir = RikuganConfig().skills_dir
         self._skills_dir = skills_dir
-        self._skills: Dict[str, SkillDefinition] = {}
+        self._skills: dict[str, SkillDefinition] = {}
 
     def discover(self) -> int:
         """Scan built-in and user skills directories. Returns total count."""
@@ -51,16 +50,58 @@ class SkillRegistry:
         log_info(f"Total skills available: {len(self._skills)}")
         return len(self._skills)
 
-    def get(self, slug: str) -> Optional[SkillDefinition]:
+    def load_external_skills(
+        self,
+        enabled_ids: list[str],
+        disabled_slugs: list[str],
+    ) -> None:
+        """Load enabled external skills and apply disabled slugs.
+
+        Parameters
+        ----------
+        enabled_ids : list of str
+            External skill IDs to enable (format: ``"source:slug"``).
+        disabled_slugs : list of str
+            Rikugan skill slugs to disable (remove from registry).
+        """
+        from ..core.external_sources import discover_all_external_skills
+
+        # Remove disabled Rikugan skills
+        for slug in disabled_slugs:
+            if slug in self._skills:
+                del self._skills[slug]
+                log_debug(f"Disabled skill: /{slug}")
+
+        if not enabled_ids:
+            return
+
+        # Build a set for O(1) lookup
+        enabled_set = set(enabled_ids)
+
+        # Discover external skills
+        external = discover_all_external_skills()
+        loaded = 0
+        for source_key, skills in external.items():
+            for skill in skills:
+                ext_id = f"{source_key}:{skill.slug}"
+                if ext_id in enabled_set:
+                    self._skills[skill.slug] = skill
+                    loaded += 1
+                    log_debug(f"Loaded external skill: {ext_id}")
+
+        if loaded:
+            log_info(f"Loaded {loaded} external skills")
+
+    def get(self, slug: str) -> SkillDefinition | None:
         return self._skills.get(slug)
 
-    def list_skills(self) -> List[SkillDefinition]:
+    def list_skills(self) -> list[SkillDefinition]:
         return list(self._skills.values())
 
-    def list_slugs(self) -> List[str]:
+    def list_slugs(self) -> list[str]:
         return list(self._skills.keys())
 
-    def get_summary_for_prompt(self) -> Optional[str]:
+    def get_summary_for_prompt(self) -> str | None:
         """Format a summary for inclusion in the system prompt."""
         if not self._skills:
             return None
@@ -70,14 +111,14 @@ class SkillRegistry:
             lines.append(f"  - /{slug}: {desc}")
         return "\n".join(lines)
 
-    def match_triggers(self, user_text: str) -> Optional[SkillDefinition]:
+    def match_triggers(self, user_text: str) -> SkillDefinition | None:
         """Match user text against skill trigger patterns.
 
         Returns the best-matching skill, or None if no triggers match.
         Skills with more matching triggers are preferred.
         """
         text_lower = user_text.lower()
-        best_skill: Optional[SkillDefinition] = None
+        best_skill: SkillDefinition | None = None
         best_count = 0
 
         for skill in self._skills.values():
@@ -92,7 +133,7 @@ class SkillRegistry:
             log_debug(f"Trigger match: /{best_skill.slug} ({best_count} hits)")
         return best_skill
 
-    def resolve_skill_invocation(self, user_text: str) -> Tuple[Optional[SkillDefinition], str]:
+    def resolve_skill_invocation(self, user_text: str) -> tuple[SkillDefinition | None, str]:
         """Check if user_text starts with /slug. Returns (skill, remaining) or (None, user_text)."""
         text = user_text.strip()
         if not text.startswith("/"):

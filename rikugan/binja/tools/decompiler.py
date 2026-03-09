@@ -6,7 +6,8 @@ from typing import Annotated
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import get_function_at, parse_addr_like, require_bv
+from .compat import parse_addr_like, require_bv
+from .fn_utils import get_function_at
 
 
 def _get_hlil(func):
@@ -75,7 +76,9 @@ def get_pseudocode(
 
 
 @tool(category="decompiler", requires_decompiler=True)
-def get_decompiler_variables(address: Annotated[str, "Function address (hex string)"]) -> str:
+def get_decompiler_variables(
+    address: Annotated[str, "Function address (hex string)"],
+) -> str:
     """List local variables from the HLIL output."""
     bv = require_bv()
     ea = parse_addr_like(address)

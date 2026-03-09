@@ -13,14 +13,14 @@ install_ida_mocks()
 
 from rikugan.core.config import RikuganConfig
 from rikugan.core.types import Message, Role, TokenUsage, ToolCall, ToolResult
-from rikugan.ida.ui.session_controller import SessionController
+from rikugan.ida.ui.session_controller import IdaSessionController
 
 
-class TestSessionController(unittest.TestCase):
+class TestIdaSessionController(unittest.TestCase):
     def setUp(self):
         self.cfg = RikuganConfig()
         self.cfg._config_dir = tempfile.mkdtemp()
-        self.ctrl = SessionController(self.cfg)
+        self.ctrl = IdaSessionController(self.cfg)
 
     def tearDown(self):
         self.ctrl.shutdown()
@@ -119,7 +119,7 @@ class TestSessionController(unittest.TestCase):
         saved_id = self.ctrl.session.id
 
         # Create fresh controller to avoid in-memory state
-        ctrl2 = SessionController(self.cfg)
+        ctrl2 = IdaSessionController(self.cfg)
         restored = ctrl2.restore_session()
         self.assertIsNotNone(restored)
         self.assertEqual(restored.id, saved_id)
@@ -139,7 +139,7 @@ class TestSessionController(unittest.TestCase):
         self.cfg.checkpoint_auto_save = True
         self.ctrl.on_agent_finished()
 
-        ctrl2 = SessionController(self.cfg)
+        ctrl2 = IdaSessionController(self.cfg)
         restored = ctrl2.restore_session()
         self.assertIsNotNone(restored)
         self.assertEqual(len(restored.messages), 3)

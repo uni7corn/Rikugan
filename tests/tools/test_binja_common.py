@@ -24,18 +24,14 @@ def _stub_mod(name: str, **kw) -> types.ModuleType:
 # binaryninja stub — just needs to be importable
 sys.modules.setdefault("binaryninja", _stub_mod("binaryninja"))
 
-from rikugan.binja.tools.common import (  # noqa: E402
-    call_compat,
-    get_function_end,
-    get_function_name,
-    is_export_symbol,
-    is_import_symbol,
-    iter_function_instruction_addresses,
-    parse_addr_like,
-    render_tokens,
-    symbol_name,
-    symbol_type_name,
+from rikugan.binja.tools.compat import call_compat, parse_addr_like  # noqa: E402
+from rikugan.binja.tools.fn_utils import (  # noqa: E402
+    get_function_end, get_function_name, iter_function_instruction_addresses,
 )
+from rikugan.binja.tools.sym_utils import (  # noqa: E402
+    is_export_symbol, is_import_symbol, symbol_name, symbol_type_name,
+)
+from rikugan.binja.tools.disasm_utils import render_tokens  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

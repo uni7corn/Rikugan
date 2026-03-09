@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Iterable, Tuple
+from collections.abc import Iterable
+from typing import Annotated
 
 from ...tools.base import tool
-from .common import (
+from .compat import parse_addr_like, read_bytes_safe, require_bv
+from .fn_utils import iter_functions
+from .sym_utils import (
     is_export_symbol,
     is_import_symbol,
-    iter_functions,
     iter_symbols,
-    parse_addr_like,
-    read_bytes_safe,
-    require_bv,
     symbol_address,
     symbol_name,
 )
@@ -29,7 +28,7 @@ def _segment_name_for_addr(bv, ea: int) -> str:
     return ""
 
 
-def _iter_segments(bv) -> Iterable[Tuple[str, int, int, str]]:
+def _iter_segments(bv) -> Iterable[tuple[str, int, int, str]]:
     segments = getattr(bv, "segments", None)
     if segments is None:
         return []
@@ -184,7 +183,7 @@ def read_bytes(
     lines = []
     for off in range(0, size, 16):
         row_ea = ea + off
-        chunk = data[off:off + 16]
+        chunk = data[off : off + 16]
         hex_parts = [f"{b:02x}" for b in chunk]
         while len(hex_parts) < 16:
             hex_parts.append("  ")

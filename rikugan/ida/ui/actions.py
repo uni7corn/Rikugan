@@ -6,9 +6,21 @@ Data-driven table of 9 context-menu actions under Rikugan/.
 from __future__ import annotations
 
 import importlib
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from ...core.logging import log_debug
+from ...ui.action_handlers import (
+    handle_annotate,
+    handle_clean,
+    handle_deobfuscate,
+    handle_explain,
+    handle_rename,
+    handle_send_to,
+    handle_suggest_types,
+    handle_vuln_audit,
+    handle_xref_analysis,
+)
 
 try:
     ida_funcs = importlib.import_module("ida_funcs")
@@ -21,13 +33,13 @@ except ImportError:
     _HAS_IDA = False
 
 
-def _get_context() -> Dict[str, Any]:
+def _get_context() -> dict[str, Any]:
     """Extract context from the current IDA view.
 
     Returns dict with keys: ea, func_ea, func_name, selected_text.
     """
     ea = idc.get_screen_ea()
-    ctx: Dict[str, Any] = {
+    ctx: dict[str, Any] = {
         "ea": ea,
         "func_ea": None,
         "func_name": None,
@@ -50,7 +62,6 @@ def _get_context() -> Dict[str, Any]:
 
 
 if _HAS_IDA:
-
     # ------------------------------------------------------------------
     # Action handler factory
     # ------------------------------------------------------------------
@@ -58,7 +69,12 @@ if _HAS_IDA:
     class _RikuganAction(idaapi.action_handler_t):
         """Generic context-menu action backed by a handler callback."""
 
-        def __init__(self, panel_getter: Callable[[], Any], handler: Callable[[Dict[str, Any]], str], auto_submit: bool = False):
+        def __init__(
+            self,
+            panel_getter: Callable[[], Any],
+            handler: Callable[[dict[str, Any]], str],
+            auto_submit: bool = False,
+        ):
             super().__init__()
             self._get_panel = panel_getter
             self._handler = handler
@@ -82,104 +98,35 @@ if _HAS_IDA:
             return idaapi.AST_ENABLE_ALWAYS
 
     # ------------------------------------------------------------------
-    # Handler functions — each returns the text to place in the input
+    # Handler functions — shared handlers from ui.action_handlers,
+    # with IDA-specific wrappers for microcode terminology.
     # ------------------------------------------------------------------
 
-    def _handle_send_to(ctx: Dict[str, Any]) -> str:
-        sel = ctx["selected_text"]
-        if sel:
-            return sel
-        name = ctx["func_name"]
-        ea = ctx["ea"]
-        if name:
-            return f"Analyze the function {name} at 0x{ea:x}"
-        return f"Analyze the code at 0x{ea:x}"
+    _handle_send_to = handle_send_to
+    _handle_explain = handle_explain
+    _handle_rename = handle_rename
+    _handle_vuln_audit = handle_vuln_audit
+    _handle_suggest_types = handle_suggest_types
+    _handle_annotate = handle_annotate
+    _handle_xref_analysis = handle_xref_analysis
 
-    def _handle_explain(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Explain the function {name} at 0x{ea:x}. "
-            "Decompile it and provide a detailed analysis."
-        )
+    def _handle_deobfuscate(ctx: dict[str, Any]) -> str:
+        return handle_deobfuscate(ctx, optimizer_term="microcode")
 
-    def _handle_rename(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Analyze the function {name} at 0x{ea:x}. "
-            "Based on its behavior, suggest better names for the function "
-            "and its local variables. Apply the renames."
-        )
-
-    def _handle_deobfuscate(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Deobfuscate the function {name} at 0x{ea:x}. "
-            "Identify obfuscation patterns (opaque predicates, junk code, "
-            "control-flow flattening, encrypted strings) and explain them. "
-            "If possible, apply microcode optimizations to clean the output."
-        )
-
-    def _handle_vuln_audit(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Audit the function {name} at 0x{ea:x} for security vulnerabilities. "
-            "Check for buffer overflows, format strings, integer overflows, "
-            "use-after-free, command injection, and other memory-safety issues. "
-            "List each finding with severity and evidence."
-        )
-
-    def _handle_suggest_types(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Analyze the function {name} at 0x{ea:x} and infer types. "
-            "Examine pointer dereference patterns to suggest structs, "
-            "identify enum-like constants, and propose proper parameter types. "
-            "Apply the type changes."
-        )
-
-    def _handle_annotate(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Annotate the function {name} at 0x{ea:x} with comments. "
-            "Add a function-level comment summarizing its purpose, and "
-            "add inline comments to key basic blocks explaining the logic."
-        )
-
-    def _handle_clean_mcode(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Clean the microcode for {name} at 0x{ea:x}. "
-            "Read the microcode, identify junk or obfuscated instructions, "
-            "NOP them or install a microcode optimizer to clean them, "
-            "then redecompile to verify the result."
-        )
-
-    def _handle_xref_analysis(ctx: Dict[str, Any]) -> str:
-        name = ctx["func_name"] or f"sub_{ctx['ea']:x}"
-        ea = ctx["func_ea"] or ctx["ea"]
-        return (
-            f"Perform a deep cross-reference analysis on {name} at 0x{ea:x}. "
-            "Trace all callers and callees, identify data references, "
-            "and map out the call graph around this function."
-        )
+    def _handle_clean_mcode(ctx: dict[str, Any]) -> str:
+        return handle_clean(ctx, ir_term="microcode")
 
     # ------------------------------------------------------------------
     # Action definitions table
     # ------------------------------------------------------------------
     # (action_id, label, handler_fn, auto_submit, hotkey, tooltip, allowed_views)
 
-    _ACTION_DEFS: List[Tuple[str, str, Callable, bool, str, str, Set[str]]] = [
+    _ACTION_DEFS: list[tuple[str, str, Callable, bool, str, str, set[str]]] = [
         (
             "rikugan:send_to",
             "Send to Rikugan",
-            _handle_send_to, False,
+            _handle_send_to,
+            False,
             "Ctrl+Shift+A",
             "Send selection or address to Rikugan input",
             {"disasm", "pseudo"},
@@ -187,7 +134,8 @@ if _HAS_IDA:
         (
             "rikugan:explain",
             "Explain this",
-            _handle_explain, True,
+            _handle_explain,
+            True,
             "",
             "Explain the current function with Rikugan",
             {"disasm", "pseudo"},
@@ -195,7 +143,8 @@ if _HAS_IDA:
         (
             "rikugan:rename",
             "Rename with Rikugan",
-            _handle_rename, True,
+            _handle_rename,
+            True,
             "",
             "Analyze and rename the current function",
             {"disasm", "pseudo"},
@@ -203,7 +152,8 @@ if _HAS_IDA:
         (
             "rikugan:deobfuscate",
             "Deobfuscate with Rikugan",
-            _handle_deobfuscate, True,
+            _handle_deobfuscate,
+            True,
             "",
             "Deobfuscate the current function",
             {"disasm", "pseudo"},
@@ -211,7 +161,8 @@ if _HAS_IDA:
         (
             "rikugan:vuln_audit",
             "Find vulnerabilities",
-            _handle_vuln_audit, True,
+            _handle_vuln_audit,
+            True,
             "",
             "Audit the current function for security bugs",
             {"disasm", "pseudo"},
@@ -219,7 +170,8 @@ if _HAS_IDA:
         (
             "rikugan:suggest_types",
             "Suggest types",
-            _handle_suggest_types, True,
+            _handle_suggest_types,
+            True,
             "",
             "Infer and apply types for the current function",
             {"disasm", "pseudo"},
@@ -227,7 +179,8 @@ if _HAS_IDA:
         (
             "rikugan:annotate",
             "Annotate function",
-            _handle_annotate, True,
+            _handle_annotate,
+            True,
             "",
             "Add comments to the current function",
             {"pseudo"},
@@ -235,7 +188,8 @@ if _HAS_IDA:
         (
             "rikugan:clean_mcode",
             "Clean microcode",
-            _handle_clean_mcode, True,
+            _handle_clean_mcode,
+            True,
             "",
             "Clean the microcode for the current function",
             {"pseudo"},
@@ -243,7 +197,8 @@ if _HAS_IDA:
         (
             "rikugan:xref_analysis",
             "Xref analysis",
-            _handle_xref_analysis, True,
+            _handle_xref_analysis,
+            True,
             "",
             "Deep cross-reference analysis on the current function",
             {"disasm", "pseudo"},
@@ -278,7 +233,15 @@ if _HAS_IDA:
             if self._registered:
                 return
 
-            for action_id, label, handler_fn, auto_submit, hotkey, tooltip, _views in _ACTION_DEFS:
+            for (
+                action_id,
+                label,
+                handler_fn,
+                auto_submit,
+                hotkey,
+                tooltip,
+                _views,
+            ) in _ACTION_DEFS:
                 desc = idaapi.action_desc_t(
                     action_id,
                     label,
@@ -309,7 +272,7 @@ if _HAS_IDA:
                 new_path = idaapi.get_path(idaapi.PATH_TYPE_IDB)
                 if not new_path:
                     new_path = idaapi.get_input_file_path() or ""
-                if new_path and hasattr(panel, "on_database_changed"):
+                if new_path:
                     panel.on_database_changed(new_path)
                     log_debug(f"Database changed notification: {new_path}")
             except Exception as e:
@@ -325,9 +288,12 @@ else:
 
     class RikuganUIHooks:
         """Stub when IDA is not available."""
+
         def __init__(self, *args, **kwargs):
             self._panel_getter = kwargs.get("panel_getter")
+
         def hook(self):
             return False
+
         def unhook(self):
             return False

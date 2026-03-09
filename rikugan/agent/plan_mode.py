@@ -5,11 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Generator, List, Optional
-
-from ..core.types import Message, Role
-from ..agent.turn import TurnEvent, TurnEventType
-from ..core.logging import log_info
 
 
 class PlanStepStatus(str, Enum):
@@ -30,7 +25,7 @@ class PlanStep:
 
 @dataclass
 class Plan:
-    steps: List[PlanStep] = field(default_factory=list)
+    steps: list[PlanStep] = field(default_factory=list)
     approved: bool = False
     current_step: int = 0
 
@@ -38,7 +33,7 @@ class Plan:
     def is_complete(self) -> bool:
         return self.current_step >= len(self.steps)
 
-    def get_current_step(self) -> Optional[PlanStep]:
+    def get_current_step(self) -> PlanStep | None:
         if self.current_step < len(self.steps):
             return self.steps[self.current_step]
         return None
@@ -61,7 +56,7 @@ Do not execute any tools yet — just output the plan.
 """
 
 
-def parse_plan(text: str) -> List[str]:
+def parse_plan(text: str) -> list[str]:
     """Parse a numbered plan from LLM output."""
     steps = []
     # Match lines like "1. ...", "2. ...", etc.
@@ -93,12 +88,14 @@ def build_step_prompt(plan: Plan) -> str:
 
     # Include results of previous steps for context
     prev_results = []
-    for s in plan.steps[:step.index]:
+    for s in plan.steps[: step.index]:
         if s.result:
             prev_results.append(f"Step {s.index + 1} ({s.status.value}): {s.result[:200]}")
     if prev_results:
         context_parts.append("\nPrevious step results:")
         context_parts.extend(prev_results)
 
-    context_parts.append("\nExecute this step now using the available tools. Be thorough but focused on this specific step.")
+    context_parts.append(
+        "\nExecute this step now using the available tools. Be thorough but focused on this specific step."
+    )
     return "\n".join(context_parts)

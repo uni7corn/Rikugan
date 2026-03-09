@@ -5,16 +5,14 @@ from __future__ import annotations
 from typing import Annotated
 
 from ...tools.base import tool
-from .common import (
-    current_ea_or_default,
-    get_function_at,
-    get_function_name,
-    get_name_at as _get_name_at,
+from .compat import current_ea_or_default, navigate, parse_addr_like, require_bv
+from .fn_utils import get_function_at, get_function_name
+from .sym_utils import (
     iter_symbols_by_name,
-    navigate,
-    parse_addr_like,
-    require_bv,
     symbol_address,
+)
+from .sym_utils import (
+    resolve_name_at as _get_name_at,
 )
 
 
@@ -38,24 +36,18 @@ def get_current_function() -> str:
     end = int(getattr(func, "highest_address", start))
     size = max(0, end - start)
     name = get_function_name(func)
-    return (
-        f"Name: {name}\n"
-        f"Start: 0x{start:x}\n"
-        f"End: 0x{end:x}\n"
-        f"Size: {size} bytes"
-    )
+    return f"Name: {name}\nStart: 0x{start:x}\nEnd: 0x{end:x}\nSize: {size} bytes"
 
 
 @tool(category="navigation")
-def jump_to(address: Annotated[str, "Address to jump to (hex string, e.g. '0x401000')"]) -> str:
+def jump_to(
+    address: Annotated[str, "Address to jump to (hex string, e.g. '0x401000')"],
+) -> str:
     """Jump the Binary Ninja view to the specified address."""
     ea = parse_addr_like(address)
     if navigate(ea):
         return f"Jumped to 0x{ea:x}"
-    return (
-        f"Could not navigate to 0x{ea:x}. "
-        "Ensure the Rikugan panel was opened from the active Binary Ninja UI."
-    )
+    return f"Could not navigate to 0x{ea:x}. Ensure the Rikugan panel was opened from the active Binary Ninja UI."
 
 
 @tool(category="navigation")

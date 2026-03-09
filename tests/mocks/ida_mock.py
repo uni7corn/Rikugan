@@ -115,7 +115,7 @@ def install_ida_mocks() -> None:
         sys.modules[mod_name] = MagicMock()
 
     # Provide real base classes for Hex-Rays optimizer types so subclasses
-    # defined in rikugan.tools.microcode_optim can override func() properly.
+    # defined in rikugan.ida.tools.microcode_optim can override func() properly.
     class _OptInsnStub:
         def remove(self): pass
         def install(self): pass

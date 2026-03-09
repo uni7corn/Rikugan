@@ -49,6 +49,7 @@ def md_to_html(text: str) -> str:
 
     # Phase 1: extract fenced code blocks to protect them from inline processing
     blocks: list[str] = []
+
     def _stash_block(m: re.Match) -> str:
         lang = m.group(1) or ""
         code = html.escape(m.group(2).strip("\n"))
@@ -88,8 +89,7 @@ def md_to_html(text: str) -> str:
             size = sizes.get(level, 13)
             h_text = _inline(hm.group(2))
             out_lines.append(
-                f'<div style="color:{_H_COLOR};font-weight:bold;font-size:{size}px;'
-                f'margin:6px 0 2px 0;">{h_text}</div>'
+                f'<div style="color:{_H_COLOR};font-weight:bold;font-size:{size}px;margin:6px 0 2px 0;">{h_text}</div>'
             )
             i += 1
             continue
@@ -142,10 +142,9 @@ def _inline(text: str) -> str:
 
     # Stash inline code spans so bold/italic don't mangle their contents
     code_spans: list[str] = []
+
     def _stash_code(m: re.Match) -> str:
-        code_spans.append(
-            f'<span style="{_INLINE_CODE_STYLE}">{m.group(1)}</span>'
-        )
+        code_spans.append(f'<span style="{_INLINE_CODE_STYLE}">{m.group(1)}</span>')
         return f"\x01CODE{len(code_spans) - 1}\x01"
 
     text = re.sub(r"`([^`]+)`", _stash_code, text)

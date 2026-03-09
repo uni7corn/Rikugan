@@ -2,56 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 import types
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
-
-# ---------------------------------------------------------------------------
-# Qt stubs (must be registered before importing panel_core)
-# ---------------------------------------------------------------------------
-
-def _qt_class(name: str) -> type:
-    return type(name, (), {"__init__": lambda self, *a, **k: None})
-
-
-class _Signal:
-    def __init__(self, *a): pass
-    def connect(self, *a): pass
-    def emit(self, *a): pass
-    def __get__(self, obj, objtype=None): return self
-
-
-_widget_names = [
-    "QApplication", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel",
-    "QPushButton", "QPlainTextEdit", "QScrollArea", "QFrame", "QSplitter",
-    "QDialog", "QDialogButtonBox", "QComboBox", "QLineEdit", "QSpinBox",
-    "QDoubleSpinBox", "QCheckBox", "QGroupBox", "QFormLayout",
-    "QToolButton", "QSizePolicy", "QTabWidget", "QTabBar",
-    "QFileDialog", "QMenu", "QMessageBox",
-]
-
-_core_mod = types.ModuleType("PySide6.QtCore")
-_core_mod.Signal = _Signal
-_core_mod.Qt = MagicMock()
-_core_mod.QObject = _qt_class("QObject")
-_core_mod.QTimer = _qt_class("QTimer")
-
-_widget_mod = types.ModuleType("PySide6.QtWidgets")
-for _n in _widget_names:
-    setattr(_widget_mod, _n, _qt_class(_n))
-
-_gui_mod = types.ModuleType("PySide6.QtGui")
-for _n in ["QSyntaxHighlighter", "QTextCharFormat", "QColor", "QFont"]:
-    setattr(_gui_mod, _n, _qt_class(_n))
-
-sys.modules.setdefault("PySide6", types.ModuleType("PySide6"))
-sys.modules.setdefault("PySide6.QtCore", _core_mod)
-sys.modules.setdefault("PySide6.QtWidgets", _widget_mod)
-sys.modules.setdefault("PySide6.QtGui", _gui_mod)
+from tests.qt_stubs import ensure_pyside6_stubs
+ensure_pyside6_stubs()
 
 # Stub heavy rikugan submodules
 for _mod_name in [
@@ -62,9 +19,13 @@ for _mod_name in [
     "rikugan.ui.tool_widgets",
     "rikugan.core.config",
     "rikugan.core.logging",
+    "rikugan.core.types",
     "rikugan.agent.turn",
     "rikugan.agent.mutation",
-    "rikugan.core.types",
+    "rikugan.providers.auth_cache",
+    "rikugan.providers.anthropic_provider",
+    "rikugan.providers.ollama_provider",
+    "rikugan.providers.registry",
 ]:
     if _mod_name not in sys.modules:
         _stub = types.ModuleType(_mod_name)
@@ -73,19 +34,17 @@ for _mod_name in [
             "_SharedSpinnerTimer", "RikuganConfig",
             "log_error", "log_info", "log_debug",
             "TurnEvent", "TurnEventType", "MutationRecord",
-            "Role",
+            "Role", "ModelInfo",
+            "resolve_auth_cached", "resolve_anthropic_auth",
+            "DEFAULT_OLLAMA_URL", "ProviderRegistry",
         ]:
             setattr(_stub, _attr, MagicMock())
         sys.modules[_mod_name] = _stub
 
-# Stub qt_compat
-_qt_compat_mod = types.ModuleType("rikugan.ui.qt_compat")
-for _n in _widget_names + ["QScrollArea", "QFrame", "QSplitter"]:
-    setattr(_qt_compat_mod, _n, _qt_class(_n))
-_qt_compat_mod.Signal = _Signal
-_qt_compat_mod.Qt = MagicMock()
-_qt_compat_mod.QTimer = _qt_class("QTimer")
-sys.modules.setdefault("rikugan.ui.qt_compat", _qt_compat_mod)
+# Ensure DEFAULT_OLLAMA_URL is a string (used in comparisons)
+_ollama_stub = sys.modules.get("rikugan.providers.ollama_provider")
+if _ollama_stub and not isinstance(getattr(_ollama_stub, "DEFAULT_OLLAMA_URL", None), str):
+    _ollama_stub.DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 # Force-remove any stub that test_binja_panel/test_ida_panel may have registered
 # so we always import the real module here.
@@ -260,6 +219,7 @@ def _make_panel():
     panel._ctrl = MagicMock()
     panel._config = MagicMock()
     panel._ui_hooks = None
+    panel._awaiting_button_approval = False
     return panel
 
 

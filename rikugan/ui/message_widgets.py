@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import random
-
 import re as _re
+from typing import ClassVar
 
-from .qt_compat import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QPushButton,
-    QWidget, Qt, Signal, QTimer,
-)
 from .markdown import md_to_html
+from .qt_compat import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    Qt,
+    QTimer,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+)
 
 _THINKING_PHRASES = [
     "analyzing binary structure...",
@@ -33,15 +41,11 @@ _THINKING_PHRASES = [
 
 # Re-export tool widgets so existing consumers that import from this module
 # continue to work without changes.
-from .tool_widgets import (  # noqa: E402
-    _SharedSpinnerTimer, ToolCallWidget, ToolBatchWidget,
-    ToolGroupWidget, ToolApprovalWidget,
-)
-
 
 # ---------------------------------------------------------------------------
 # Collapsible section (unchanged, used internally)
 # ---------------------------------------------------------------------------
+
 
 class CollapsibleSection(QFrame):
     """A widget with a clickable header that shows/hides content."""
@@ -93,6 +97,7 @@ class CollapsibleSection(QFrame):
 # User message
 # ---------------------------------------------------------------------------
 
+
 class UserMessageWidget(QFrame):
     """Displays a user message."""
 
@@ -109,7 +114,9 @@ class UserMessageWidget(QFrame):
 
         self._content = QLabel(text)
         self._content.setWordWrap(True)
-        self._content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._content.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         layout.addWidget(self._content)
 
@@ -118,7 +125,7 @@ class UserMessageWidget(QFrame):
 # Thinking content parser
 # ---------------------------------------------------------------------------
 
-_THINK_RE = _re.compile(r'<think>(.*?)</think>', _re.DOTALL)
+_THINK_RE = _re.compile(r"<think>(.*?)</think>", _re.DOTALL)
 
 
 def _split_thinking(text: str):
@@ -134,7 +141,7 @@ def _split_thinking(text: str):
     last_end = 0
     visible_parts: list = []
     for m in _THINK_RE.finditer(text):
-        visible_parts.append(text[last_end:m.start()])
+        visible_parts.append(text[last_end : m.start()])
         thinking_parts.append(m.group(1).strip())
         last_end = m.end()
     visible_parts.append(text[last_end:])
@@ -143,7 +150,7 @@ def _split_thinking(text: str):
     # Check for unclosed <think> (still streaming)
     open_idx = remaining.rfind("<think>")
     if open_idx >= 0:
-        partial = remaining[open_idx + 7:].strip()
+        partial = remaining[open_idx + 7 :].strip()
         if partial:
             thinking_parts.append(partial)
         remaining = remaining[:open_idx]
@@ -155,16 +162,14 @@ def _split_thinking(text: str):
 # Collapsible thinking block
 # ---------------------------------------------------------------------------
 
+
 class _ThinkingBlock(QFrame):
     """Collapsible block for model reasoning / chain-of-thought."""
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("thinking_block")
-        self.setStyleSheet(
-            "#thinking_block { background: #1a1a2e; border: 1px solid #2a2a3e; "
-            "border-radius: 6px; }"
-        )
+        self.setStyleSheet("#thinking_block { background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 6px; }")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -181,9 +186,7 @@ class _ThinkingBlock(QFrame):
         header.setSpacing(4)
         header.addWidget(self._toggle)
         self._header_label = QLabel("Thinking")
-        self._header_label.setStyleSheet(
-            "color: #707090; font-size: 11px; font-style: italic;"
-        )
+        self._header_label.setStyleSheet("color: #707090; font-size: 11px; font-style: italic;")
         header.addWidget(self._header_label, 1)
         layout.addLayout(header)
 
@@ -191,8 +194,7 @@ class _ThinkingBlock(QFrame):
         self._content.setWordWrap(True)
         self._content.setTextFormat(Qt.TextFormat.RichText)
         self._content.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self._content.setStyleSheet("color: #606078; font-size: 12px;")
         self._content.hide()
@@ -216,6 +218,7 @@ class _ThinkingBlock(QFrame):
 # ---------------------------------------------------------------------------
 # Assistant message (with streaming + Markdown)
 # ---------------------------------------------------------------------------
+
 
 class AssistantMessageWidget(QFrame):
     """Displays an assistant message with streaming support and Markdown rendering."""
@@ -278,10 +281,11 @@ class AssistantMessageWidget(QFrame):
 # Thinking indicator
 # ---------------------------------------------------------------------------
 
+
 class ThinkingWidget(QFrame):
     """Animated thinking indicator shown while the LLM is processing."""
 
-    _STAR_FRAMES = ["✳", "✴", "✵", "✶"]
+    _STAR_FRAMES: ClassVar[list[str]] = ["✳", "✴", "✵", "✶"]
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -331,6 +335,7 @@ class ThinkingWidget(QFrame):
 # Other message widgets
 # ---------------------------------------------------------------------------
 
+
 class QueuedMessageWidget(QFrame):
     """Displays a queued user message with dashed border."""
 
@@ -338,8 +343,7 @@ class QueuedMessageWidget(QFrame):
         super().__init__(parent)
         self.setObjectName("message_queued")
         self.setStyleSheet(
-            "QFrame#message_queued { border: 1px dashed #007acc; "
-            "border-radius: 6px; background: #1e1e2e; }"
+            "QFrame#message_queued { border: 1px dashed #007acc; border-radius: 6px; background: #1e1e2e; }"
         )
 
         layout = QHBoxLayout(self)
@@ -353,7 +357,9 @@ class QueuedMessageWidget(QFrame):
 
         self._content = QLabel(text)
         self._content.setWordWrap(True)
-        self._content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._content.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         content_layout.addWidget(self._content)
 
@@ -370,12 +376,11 @@ class UserQuestionWidget(QFrame):
 
     option_selected = Signal(str)  # emitted with the chosen option text
 
-    def __init__(self, question: str, options: list = None, parent: QWidget = None):
+    def __init__(self, question: str, options: list | None = None, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("message_question")
         self.setStyleSheet(
-            "QFrame#message_question { border: 1px solid #dcdcaa; "
-            "border-radius: 6px; background: #2d2d1e; }"
+            "QFrame#message_question { border: 1px solid #dcdcaa; border-radius: 6px; background: #2d2d1e; }"
         )
 
         layout = QVBoxLayout(self)
@@ -388,7 +393,9 @@ class UserQuestionWidget(QFrame):
 
         self._q_label = QLabel(question)
         self._q_label.setWordWrap(True)
-        self._q_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._q_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._q_label.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         layout.addWidget(self._q_label)
 
@@ -423,20 +430,17 @@ class UserQuestionWidget(QFrame):
 class ExplorationPhaseWidget(QFrame):
     """Displays an exploration phase transition."""
 
-    _PHASE_ICONS = {
-        "explore": "\u25b6",   # play
-        "plan": "\u270e",      # pencil
-        "execute": "\u2699",   # gear
-        "save": "\u2714",      # checkmark
+    _PHASE_ICONS: ClassVar[dict[str, str]] = {
+        "explore": "\u25b6",  # play
+        "plan": "\u270e",  # pencil
+        "execute": "\u2699",  # gear
+        "save": "\u2714",  # checkmark
     }
 
-    def __init__(self, from_phase: str, to_phase: str, reason: str = "",
-                 parent: QWidget = None):
+    def __init__(self, from_phase: str, to_phase: str, reason: str = "", parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("message_tool")
-        self.setStyleSheet(
-            "QFrame#message_tool { border-color: #d7ba7d; background: #2d2a1f; }"
-        )
+        self.setStyleSheet("QFrame#message_tool { border-color: #d7ba7d; background: #2d2a1f; }")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -444,9 +448,7 @@ class ExplorationPhaseWidget(QFrame):
 
         icon = self._PHASE_ICONS.get(to_phase, "\u2192")
         self._phase_label = QLabel(f"{icon}  Phase: {to_phase.upper()}")
-        self._phase_label.setStyleSheet(
-            "color: #d7ba7d; font-weight: bold; font-size: 11px;"
-        )
+        self._phase_label.setStyleSheet("color: #d7ba7d; font-weight: bold; font-size: 11px;")
         layout.addWidget(self._phase_label)
 
         if reason:
@@ -459,7 +461,7 @@ class ExplorationPhaseWidget(QFrame):
 class ExplorationFindingWidget(QFrame):
     """Displays a single exploration finding."""
 
-    _CATEGORY_COLORS = {
+    _CATEGORY_COLORS: ClassVar[dict[str, str]] = {
         "function_purpose": "#4ec9b0",
         "hypothesis": "#d7ba7d",
         "constant": "#b5cea8",
@@ -470,30 +472,30 @@ class ExplorationFindingWidget(QFrame):
         "general": "#808080",
     }
 
-    def __init__(self, category: str, summary: str, address: str = None,
-                 relevance: str = "medium", parent: QWidget = None):
+    def __init__(
+        self,
+        category: str,
+        summary: str,
+        address: str | None = None,
+        relevance: str = "medium",
+        parent: QWidget = None,
+    ):
         super().__init__(parent)
         self.setObjectName("message_tool")
         color = self._CATEGORY_COLORS.get(category, "#808080")
-        self.setStyleSheet(
-            f"QFrame#message_tool {{ border-color: {color}; }}"
-        )
+        self.setStyleSheet(f"QFrame#message_tool {{ border-color: {color}; }}")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
 
         self._cat_label = QLabel(f"[{category}]")
-        self._cat_label.setStyleSheet(
-            f"color: {color}; font-weight: bold; font-size: 10px;"
-        )
+        self._cat_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 10px;")
         layout.addWidget(self._cat_label)
 
         if address:
             self._addr_label = QLabel(address)
-            self._addr_label.setStyleSheet(
-                "color: #808080; font-family: monospace; font-size: 10px;"
-            )
+            self._addr_label.setStyleSheet("color: #808080; font-family: monospace; font-size: 10px;")
             layout.addWidget(self._addr_label)
 
         self._summary_label = QLabel(summary)
@@ -525,6 +527,8 @@ class ErrorMessageWidget(QFrame):
 
         self._content = QLabel(error_text)
         self._content.setWordWrap(True)
-        self._content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._content.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._content.setStyleSheet("color: #f44747; font-size: 12px;")
         layout.addWidget(self._content)

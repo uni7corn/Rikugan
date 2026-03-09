@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
-from ..core.types import Message, Role, TokenUsage
 from ..core.logging import log_info
 from ..core.sanitize import strip_injection_markers
+from ..core.types import Message, Role, TokenUsage
 
 
 class ContextWindowManager:
@@ -40,7 +38,7 @@ class ContextWindowManager:
     def should_compact(self) -> bool:
         return self.is_near_limit
 
-    def compact_messages(self, messages: List[Message]) -> List[Message]:
+    def compact_messages(self, messages: list[Message]) -> list[Message]:
         """Compact the message list to reduce token usage.
 
         Strategy:
@@ -83,11 +81,8 @@ class ContextWindowManager:
         summary_text = "\n".join(summary_parts)
         summary_msg = Message(role=Role.USER, content=summary_text)
 
-        compacted = head + [summary_msg] + tail
-        log_info(
-            f"Context compacted: {len(messages)} → {len(compacted)} messages "
-            f"({len(middle)} messages summarized)"
-        )
+        compacted = [*head, summary_msg, *tail]
+        log_info(f"Context compacted: {len(messages)} → {len(compacted)} messages ({len(middle)} messages summarized)")
         return compacted
 
     @staticmethod

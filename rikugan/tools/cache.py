@@ -4,49 +4,56 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from ..core.logging import log_debug
 
 # Tool names whose results are safe to cache (read-only, deterministic
 # for a given binary state).  Both IDA and BN registries use the same
 # tool names for these.
-CACHEABLE_TOOLS: frozenset[str] = frozenset({
-    "list_functions",
-    "list_strings",
-    "get_binary_info",
-    "decompile_function",
-    "function_xrefs",
-})
+CACHEABLE_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_functions",
+        "list_strings",
+        "get_binary_info",
+        "decompile_function",
+        "function_xrefs",
+    }
+)
 
 # Cache key: (tool_name, frozen_args) → (timestamp, result_str)
-_CacheEntry = Tuple[float, str]
-_CacheKey = Tuple[str, Tuple[Tuple[str, Any], ...]]
+_CacheEntry = tuple[float, str]
+_CacheKey = tuple[str, tuple[tuple[str, Any], ...]]
 
 
 class ToolResultCache:
     """Thread-safe cache for tool results, invalidated by mutating tools."""
 
-    def __init__(self, ttl: Optional[float] = None):
-        self._store: Dict[_CacheKey, _CacheEntry] = {}
+    def __init__(self, ttl: float | None = None):
+        self._store: dict[_CacheKey, _CacheEntry] = {}
         self._ttl = ttl
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
 
     @staticmethod
-    def _make_key(tool_name: str, arguments: Dict[str, Any]) -> _CacheKey:
+    def _make_key(tool_name: str, arguments: dict[str, Any]) -> _CacheKey:
         """Build a hashable cache key from tool name and arguments."""
         try:
-            frozen = tuple(sorted(
-                (k, v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
-                for k, v in arguments.items()
-            ))
+            frozen = tuple(
+                sorted(
+                    (
+                        k,
+                        v if isinstance(v, (str, int, float, bool, type(None))) else str(v),
+                    )
+                    for k, v in arguments.items()
+                )
+            )
         except Exception:
             frozen = ()
         return (tool_name, frozen)
 
-    def get(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+    def get(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
         """Return cached result or None on miss."""
         if tool_name not in CACHEABLE_TOOLS:
             return None
@@ -65,7 +72,7 @@ class ToolResultCache:
             log_debug(f"Cache hit: {tool_name} (hits={self._hits})")
             return result
 
-    def put(self, tool_name: str, arguments: Dict[str, Any], result: str) -> None:
+    def put(self, tool_name: str, arguments: dict[str, Any], result: str) -> None:
         """Store a result in the cache."""
         if tool_name not in CACHEABLE_TOOLS:
             return
@@ -87,7 +94,7 @@ class ToolResultCache:
             return len(self._store)
 
     @property
-    def stats(self) -> Tuple[int, int]:
+    def stats(self) -> tuple[int, int]:
         """Return (hits, misses)."""
         with self._lock:
             return self._hits, self._misses

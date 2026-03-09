@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import json
 import os
-import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..constants import SESSION_SCHEMA_VERSION
 from ..core.config import RikuganConfig
@@ -51,23 +50,20 @@ class SessionHistory:
             "messages": [m.to_dict() for m in session.messages],
         }
         if session.subagent_logs:
-            data["subagent_logs"] = {
-                key: [m.to_dict() for m in msgs]
-                for key, msgs in session.subagent_logs.items()
-            }
+            data["subagent_logs"] = {key: [m.to_dict() for m in msgs] for key, msgs in session.subagent_logs.items()}
         if description:
             data["description"] = description
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
         return path
 
-    def load_session(self, session_id: str) -> Optional[SessionState]:
+    def load_session(self, session_id: str) -> SessionState | None:
         """Load a session by ID. Returns None if not found or corrupt."""
         path = os.path.join(self._dir, f"{session_id}.json")
         if not os.path.exists(path):
             return None
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             log_debug(f"Failed to load session {session_id}: {exc}")
@@ -88,9 +84,7 @@ class SessionHistory:
             session.subagent_logs[key] = [Message.from_dict(md) for md in msg_dicts]
         return session
 
-    def list_sessions(
-        self, idb_path: str = "", db_instance_id: str = ""
-    ) -> List[Dict[str, Any]]:
+    def list_sessions(self, idb_path: str = "", db_instance_id: str = "") -> list[dict[str, Any]]:
         """List saved session summaries, filtered by IDB path and instance ID."""
         sessions = []
         normalized_target = _normalize_db_path(idb_path)
@@ -131,9 +125,7 @@ class SessionHistory:
                 continue
         return sessions
 
-    def get_latest_session(
-        self, idb_path: str = "", db_instance_id: str = ""
-    ) -> Optional[SessionState]:
+    def get_latest_session(self, idb_path: str = "", db_instance_id: str = "") -> SessionState | None:
         """Load the most recently saved session for this IDB."""
         sessions = self.list_sessions(idb_path=idb_path, db_instance_id=db_instance_id)
         if not sessions:

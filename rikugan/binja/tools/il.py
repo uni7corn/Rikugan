@@ -6,16 +6,10 @@ from typing import Annotated, Any
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import (
-    get_function_at,
-    get_function_name,
-    get_instruction_len,
-    parse_addr_like,
-    require_bv,
-    update_analysis_and_wait,
-)
+from .compat import parse_addr_like, require_bv, update_analysis_and_wait
 from .decompiler import get_pseudocode
-
+from .disasm_utils import get_instruction_len
+from .fn_utils import get_function_at, get_function_name
 
 _IL_LEVELS = {
     # Primary IL level names
@@ -134,10 +128,7 @@ def get_il(
     start = int(getattr(func, "start", ea))
     end = int(getattr(func, "highest_address", start))
     resolved = _IL_LEVELS.get(lvl, lvl)
-    header = (
-        f"=== IL for {get_function_name(func)} at {resolved} ===\n"
-        f"Function: 0x{start:x} - 0x{end:x}\n"
-    )
+    header = f"=== IL for {get_function_name(func)} at {resolved} ===\nFunction: 0x{start:x} - 0x{end:x}\n"
     return header + _render_il(il)
 
 
@@ -165,7 +156,10 @@ def get_il_block(
 
     blk = blocks[block_index]
     resolved = _IL_LEVELS.get(lvl, lvl)
-    lines = [f"=== Block {block_index} of {get_function_name(func)} at {resolved} ===", ""]
+    lines = [
+        f"=== Block {block_index} of {get_function_name(func)} at {resolved} ===",
+        "",
+    ]
     start = getattr(blk, "start", None)
     end = getattr(blk, "end", None)
     if isinstance(start, int) and isinstance(end, int):
@@ -193,8 +187,7 @@ def nop_instructions(
     func_address: Annotated[str, "Address of the function to patch"],
     instruction_addresses: Annotated[
         str,
-        "Comma-separated hex addresses of instructions to NOP "
-        "(e.g. '0x401004,0x401008,0x40100c')"
+        "Comma-separated hex addresses of instructions to NOP (e.g. '0x401004,0x401008,0x40100c')",
     ],
 ) -> str:
     """Patch selected instructions to NOP bytes and update analysis."""

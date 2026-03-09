@@ -5,16 +5,14 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
-from ..core.logging import log_debug
-from .base import parse_addr, tool
-
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 
 try:
     idautils = importlib.import_module("idautils")
     idc = importlib.import_module("idc")
 except ImportError as e:
     log_debug(f"IDA modules not available: {e}")
-
 
 
 @tool(category="strings")
@@ -26,11 +24,11 @@ def list_strings(
 
     strings = list(idautils.Strings())
     total = len(strings)
-    page = strings[offset:offset + limit]
+    page = strings[offset : offset + limit]
 
-    lines = [f"Strings {offset}–{offset + len(page)} of {total}:"]
+    lines = [f"Strings {offset}\u2013{offset + len(page)} of {total}:"]
     for s in page:
-        lines.append(f"  0x{s.ea:x}  [{s.length}] {str(s)}")
+        lines.append(f"  0x{s.ea:x}  [{s.length}] {s!s}")
     return "\n".join(lines)
 
 

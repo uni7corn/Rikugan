@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from tests.mocks.ida_mock import install_ida_mocks
@@ -14,7 +14,6 @@ install_ida_mocks()
 
 from rikugan.providers.ollama_provider import OllamaProvider, DEFAULT_OLLAMA_URL
 from rikugan.providers.openai_compat import OpenAICompatProvider
-from rikugan.core.types import ModelInfo
 
 
 # ---------------------------------------------------------------------------
