@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 from ..constants import MCP_TOOL_PREFIX
 from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..tools.registry import ToolRegistry
-from .config import MCPServerConfig, load_mcp_config
-from .client import MCPClient
 from .bridge import register_mcp_tools
+from .client import MCPClient
+from .config import MCPServerConfig, load_mcp_config
 
 # Soft timeout: log a warning if startup takes longer than this.
 _SOFT_TIMEOUT = 5.0
@@ -27,19 +27,22 @@ class MCPManager:
     """
 
     def __init__(self):
-        self._configs: List[MCPServerConfig] = []
-        self._clients: Dict[str, MCPClient] = {}
+        self._configs: list[MCPServerConfig] = []
+        self._clients: dict[str, MCPClient] = {}
         self._lock = threading.Lock()
         self._shut_down = False
+        self._generation = 0  # incremented on each start/reload cycle
 
     def load_config(self, path: str = "") -> int:
         """Load MCP config. Returns number of enabled servers found."""
         self._configs = load_mcp_config(path)
         enabled = [c for c in self._configs if c.enabled]
-        log_info(f"MCP config: {len(enabled)} enabled servers out of {len(self._configs)} total")
+        log_info(
+            f"MCP config: {len(enabled)} enabled servers out of {len(self._configs)} total"
+        )
         return len(enabled)
 
-    def add_external_configs(self, configs: List[MCPServerConfig]) -> None:
+    def add_external_configs(self, configs: list[MCPServerConfig]) -> None:
         """Append additional MCP server configs (from external sources).
 
         These are added to ``_configs`` before ``start_servers()`` is called.
@@ -52,7 +55,7 @@ class MCPManager:
     def start_servers(
         self,
         registry: ToolRegistry,
-        on_complete: Optional[Callable[[str, int], None]] = None,
+        on_complete: Callable[[str, int], None] | None = None,
     ) -> None:
         """Start all enabled servers in background threads.
 
@@ -63,13 +66,17 @@ class MCPManager:
             log_warning("MCP: start_servers called after shutdown — ignoring")
             return
 
+        with self._lock:
+            self._generation += 1
+            gen = self._generation
+
         for config in self._configs:
             if not config.enabled:
                 continue
 
             thread = threading.Thread(
                 target=self._start_one,
-                args=(config, registry, on_complete),
+                args=(config, registry, on_complete, gen),
                 daemon=True,
                 name=f"mcp-start-{config.name}",
             )
@@ -79,12 +86,15 @@ class MCPManager:
         self,
         config: MCPServerConfig,
         registry: ToolRegistry,
-        on_complete: Optional[Callable[[str, int], None]],
+        on_complete: Callable[[str, int], None] | None,
+        generation: int,
     ) -> None:
         """Start a single MCP server (runs in background thread).
 
         Uses a soft timeout (_SOFT_TIMEOUT) to emit a warning and a hard
         timeout (_HARD_TIMEOUT) to abort, preventing indefinite UI freezes.
+        The *generation* token guards against late registrations after a
+        reload or shutdown has superseded this start cycle.
         """
         hard = min(config.timeout, _HARD_TIMEOUT)
         client = MCPClient(config)
@@ -98,6 +108,13 @@ class MCPManager:
                     f"(soft limit {_SOFT_TIMEOUT}s)"
                 )
             with self._lock:
+                if self._generation != generation or self._shut_down:
+                    log_warning(
+                        f"MCP[{config.name}]: discarding stale startup "
+                        f"(gen {generation} vs current {self._generation})"
+                    )
+                    client.stop()
+                    return
                 self._clients[config.name] = client
             count = register_mcp_tools(client, registry)
             log_info(f"MCP[{config.name}]: started OK, {count} tools registered")
@@ -108,7 +125,9 @@ class MCPManager:
             try:
                 client.stop()
             except Exception as stop_err:
-                log_debug(f"MCP[{config.name}]: cleanup after start failure: {stop_err}")
+                log_debug(
+                    f"MCP[{config.name}]: cleanup after start failure: {stop_err}"
+                )
 
     def stop_all(self) -> None:
         """Stop all running MCP servers."""
@@ -129,16 +148,19 @@ class MCPManager:
 
         Call this during application shutdown instead of ``stop_all()``
         to ensure no new servers are started after cleanup.
+        Increments the generation to invalidate any in-flight startups.
         """
-        self._shut_down = True
+        with self._lock:
+            self._shut_down = True
+            self._generation += 1
         self.stop_all()
 
-    def list_servers(self) -> List[str]:
+    def list_servers(self) -> list[str]:
         """List names of connected servers."""
         with self._lock:
             return list(self._clients.keys())
 
-    def get_client(self, name: str) -> Optional[MCPClient]:
+    def get_client(self, name: str) -> MCPClient | None:
         """Get a client by server name."""
         with self._lock:
             return self._clients.get(name)
@@ -147,7 +169,7 @@ class MCPManager:
         self,
         registry: ToolRegistry,
         config_path: str = "",
-        on_complete: Optional[Callable[[str, int], None]] = None,
+        on_complete: Callable[[str, int], None] | None = None,
     ) -> None:
         """Reload MCP config and restart servers.
 

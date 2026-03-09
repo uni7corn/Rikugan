@@ -4,19 +4,34 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, List, Optional
+from typing import Any
 
-from .qt_compat import (
-    QApplication, QDialog, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QGroupBox, QComboBox, QLineEdit, QDoubleSpinBox, QSpinBox, QCheckBox,
-    QLabel, QPushButton, QWidget, Qt, QTimer, QTabWidget,
-)
 from ..core.config import RikuganConfig
 from ..core.logging import log_debug, log_error
 from ..core.types import ModelInfo
-from ..providers.anthropic_provider import resolve_anthropic_auth
+from ..providers.auth_cache import resolve_auth_cached
 from ..providers.ollama_provider import DEFAULT_OLLAMA_URL
 from ..providers.registry import ProviderRegistry
+from .qt_compat import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    Qt,
+    QTabWidget,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+)
 
 _DEFAULT_MINIMAX_URL = "https://api.minimax.io/anthropic"
 _CUSTOM_PROVIDER_URL_PLACEHOLDER = "https://api.example.com/v1"
@@ -30,24 +45,8 @@ _PROVIDER_BASES = {
 # Placeholder/default keys that should be cleared on provider switch
 _PROVIDER_DEFAULT_KEYS = {"ollama"}
 
-# Module-level cache to avoid subprocess.run during widget construction
-_cached_oauth: Optional[tuple] = None  # (token, auth_type)
-
-
-def _resolve_auth_cached(explicit_key: str = "") -> tuple:
-    """Resolve Anthropic auth with caching to avoid subprocess spawns.
-
-    Uses the module-level ``resolve_anthropic_auth`` import (resolved
-    during the Shiboken bypass window) so no runtime ``from`` import
-    goes through the hook.
-    """
-    global _cached_oauth
-    if explicit_key:
-        return resolve_anthropic_auth(explicit_key)
-    if _cached_oauth is not None:
-        return _cached_oauth
-    _cached_oauth = resolve_anthropic_auth("")
-    return _cached_oauth
+# Backwards-compatible alias (tests and external code may reference the old name)
+_resolve_auth_cached = resolve_auth_cached
 
 
 class _ModelFetcher:
@@ -78,7 +77,9 @@ class _ModelFetcher:
         # imported from a background thread.
         try:
             provider = self._registry.create(
-                provider_name, api_key=api_key, api_base=api_base,
+                provider_name,
+                api_key=api_key,
+                api_base=api_base,
             )
             provider.ensure_ready()
         except Exception as e:
@@ -97,7 +98,7 @@ class _ModelFetcher:
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def poll(self) -> Optional[tuple]:
+    def poll(self) -> tuple | None:
         """Non-blocking poll. Returns ('models'|'error', provider_name, payload) or None."""
         try:
             return self._queue.get_nowait()
@@ -105,7 +106,14 @@ class _ModelFetcher:
             return None
 
 
-_BUILTIN_PROVIDERS = ["anthropic", "openai", "gemini", "ollama", "minimax", "openai_compat"]
+_BUILTIN_PROVIDERS = [
+    "anthropic",
+    "openai",
+    "gemini",
+    "ollama",
+    "minimax",
+    "openai_compat",
+]
 
 
 class _AddProviderDialog(QDialog):
@@ -170,8 +178,13 @@ class _AddProviderDialog(QDialog):
 class SettingsDialog(QDialog):
     """Configuration dialog for Rikugan."""
 
-    def __init__(self, config: RikuganConfig, registry: Optional[ProviderRegistry] = None,
-                 tool_registry: Optional[Any] = None, parent: QWidget = None):
+    def __init__(
+        self,
+        config: RikuganConfig,
+        registry: ProviderRegistry | None = None,
+        tool_registry: Any | None = None,
+        parent: QWidget = None,
+    ):
         # Use None parent to avoid lifecycle coupling with IDA PluginForm widgets
         super().__init__(None)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -182,7 +195,7 @@ class SettingsDialog(QDialog):
             list(self._config.custom_providers.keys())
         )
         self._fetcher = _ModelFetcher(self._registry)
-        self._fetched_models: List[ModelInfo] = []
+        self._fetched_models: list[ModelInfo] = []
         self._resolved_token: str = ""
         self._model_restore_hint: str = self._config.provider.model.strip()
         self._shown = False
@@ -191,7 +204,9 @@ class SettingsDialog(QDialog):
         screen = QApplication.primaryScreen()
         if screen:
             avail = screen.availableGeometry()
-            self.resize(min(int(avail.width() * 0.45), 900), min(int(avail.height() * 0.7), 800))
+            self.resize(
+                min(int(avail.width() * 0.45), 900), min(int(avail.height() * 0.7), 800)
+            )
         else:
             self.resize(700, 600)
         self.setMinimumWidth(400)
@@ -227,15 +242,18 @@ class SettingsDialog(QDialog):
         playout.addStretch()
         self._tabs.addTab(provider_tab, "Provider")
 
-        # Tab 1-3: Skills, MCP, Profiles
-        from .tabs.skills_tab import SkillsTab
+        # Tab 1-3: Skills, MCP, Profiles — all use a shared SettingsService
+        from .settings_service import SettingsService
         from .tabs.mcp_tab import MCPTab
         from .tabs.profiles_tab import ProfilesTab
-        self._skills_tab = SkillsTab(self._config)
+        from .tabs.skills_tab import SkillsTab
+
+        self._service = SettingsService(self._config, tool_registry=self._tool_registry)
+        self._skills_tab = SkillsTab(self._config, service=self._service)
         self._tabs.addTab(self._skills_tab, "Skills")
-        self._mcp_tab = MCPTab(self._config)
+        self._mcp_tab = MCPTab(self._config, service=self._service)
         self._tabs.addTab(self._mcp_tab, "MCP")
-        self._profiles_tab = ProfilesTab(self._config, tool_registry=self._tool_registry)
+        self._profiles_tab = ProfilesTab(self._config, service=self._service)
         self._tabs.addTab(self._profiles_tab, "Profiles")
 
         layout.addWidget(self._tabs)
@@ -251,7 +269,7 @@ class SettingsDialog(QDialog):
         self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
         self._api_key_edit.editingFinished.connect(self._on_key_edited)
 
-    def _build_provider_group(self) -> "QGroupBox":
+    def _build_provider_group(self) -> QGroupBox:
         """Build the LLM Provider settings group box."""
         provider_group = QGroupBox("LLM Provider")
         provider_form = QFormLayout(provider_group)
@@ -276,7 +294,7 @@ class SettingsDialog(QDialog):
 
         return provider_group
 
-    def _build_provider_row(self) -> "QHBoxLayout":
+    def _build_provider_row(self) -> QHBoxLayout:
         """Build the provider combo + add/remove buttons row."""
         btn_style = (
             "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
@@ -307,7 +325,7 @@ class SettingsDialog(QDialog):
 
         return row  # connected AFTER group is built (in _build_ui)
 
-    def _build_model_row(self) -> "QHBoxLayout":
+    def _build_model_row(self) -> QHBoxLayout:
         """Build the model combo + refresh button + status row."""
         model_layout = QHBoxLayout()
         self._model_combo = QComboBox()
@@ -332,7 +350,7 @@ class SettingsDialog(QDialog):
         model_layout.addWidget(self._model_status)
         return model_layout
 
-    def _build_generation_group(self) -> "QGroupBox":
+    def _build_generation_group(self) -> QGroupBox:
         """Build the Generation settings group box."""
         gen_group = QGroupBox("Generation")
         gen_form = QFormLayout(gen_group)
@@ -358,12 +376,14 @@ class SettingsDialog(QDialog):
 
         return gen_group
 
-    def _build_behavior_group(self) -> "QGroupBox":
+    def _build_behavior_group(self) -> QGroupBox:
         """Build the Behavior settings group box."""
         behavior_group = QGroupBox("Behavior")
         behavior_form = QFormLayout(behavior_group)
 
-        self._auto_context_cb = QCheckBox("Auto-inject binary context into system prompt")
+        self._auto_context_cb = QCheckBox(
+            "Auto-inject binary context into system prompt"
+        )
         self._auto_context_cb.setChecked(self._config.auto_context)
         behavior_form.addRow(self._auto_context_cb)
 
@@ -389,7 +409,9 @@ class SettingsDialog(QDialog):
         )
         behavior_form.addRow("API retry attempts:", self._max_retries_spin)
 
-        self._silent_retry_cb = QCheckBox("Show loading indicator instead of error messages during retries")
+        self._silent_retry_cb = QCheckBox(
+            "Show loading indicator instead of error messages during retries"
+        )
         self._silent_retry_cb.setChecked(self._config.silent_retry_mode)
         self._silent_retry_cb.setToolTip(
             "When enabled, rate-limit retries show a subtle text indicator "
@@ -401,7 +423,7 @@ class SettingsDialog(QDialog):
 
     # --- Show event: defer all non-widget work to here ---
 
-    def showEvent(self, event) -> None:  # noqa: N802
+    def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._shown:
             self._shown = True
@@ -484,7 +506,9 @@ class SettingsDialog(QDialog):
 
         # Update placeholder
         if provider == "anthropic":
-            self._api_key_edit.setPlaceholderText("sk-... or leave empty for OAuth auto-detect")
+            self._api_key_edit.setPlaceholderText(
+                "sk-... or leave empty for OAuth auto-detect"
+            )
         elif provider == "ollama":
             self._api_key_edit.setPlaceholderText("Not required for local Ollama")
         elif provider in ("openai_compat",) or is_custom:
@@ -513,7 +537,9 @@ class SettingsDialog(QDialog):
         base = self._api_base_edit.text().strip()
 
         try:
-            provider = self._registry.create(provider_name, api_key=explicit_key, api_base=base)
+            provider = self._registry.create(
+                provider_name, api_key=explicit_key, api_base=base
+            )
             label, status_type = provider.auth_status()
             self._resolved_token = provider.api_key
         except Exception as e:
@@ -526,7 +552,9 @@ class SettingsDialog(QDialog):
             self._auth_status.setStyleSheet(self._OK_STYLE)
         elif status_type == "error":
             if provider_name == "anthropic":
-                self._auth_status.setText("run claude setup-token to acquire your oauth")
+                self._auth_status.setText(
+                    "run claude setup-token to acquire your oauth"
+                )
                 self._auth_status.setStyleSheet(self._HINT_STYLE)
             else:
                 self._auth_status.setText(label)

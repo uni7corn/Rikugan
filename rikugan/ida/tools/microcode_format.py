@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import importlib
 
-from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
-from ..core.errors import ToolError
-from ..core.logging import log_debug
+from ...core.errors import ToolError
+from ...core.host import HAS_HEXRAYS as _HAS_HEXRAYS
+from ...core.logging import log_debug
 
 ida_hexrays = ida_lines = ida_name = None
 try:
@@ -67,6 +67,7 @@ def maturity_label(level: int) -> str:
 # ---------------------------------------------------------------------------
 # Instruction / block / MBA formatting
 # ---------------------------------------------------------------------------
+
 
 def insn_text(ins) -> str:
     """Readable text for a single minsn_t."""
@@ -138,6 +139,7 @@ def format_mba(mba) -> str:
 # Pseudocode extraction
 # ---------------------------------------------------------------------------
 
+
 def get_pseudocode_text(cfunc) -> str:
     """Extract pseudocode text from a cfunc_t."""
     lines = []
@@ -151,6 +153,7 @@ def get_pseudocode_text(cfunc) -> str:
 # ---------------------------------------------------------------------------
 # Function name helper
 # ---------------------------------------------------------------------------
+
 
 def func_name(pfn) -> str:
     """Get a readable name for a function."""
@@ -172,14 +175,22 @@ _MOP_FORMATTERS = {}
 
 if _HAS_HEXRAYS:
     _MOP_TYPE_NAMES = {
-        ida_hexrays.mop_z: "mop_z",  ida_hexrays.mop_r: "mop_r",
-        ida_hexrays.mop_n: "mop_n",  ida_hexrays.mop_d: "mop_d",
-        ida_hexrays.mop_S: "mop_S",  ida_hexrays.mop_v: "mop_v",
-        ida_hexrays.mop_b: "mop_b",  ida_hexrays.mop_f: "mop_f",
-        ida_hexrays.mop_l: "mop_l",  ida_hexrays.mop_a: "mop_a",
-        ida_hexrays.mop_h: "mop_h",  ida_hexrays.mop_str: "mop_str",
-        ida_hexrays.mop_c: "mop_c",  ida_hexrays.mop_fn: "mop_fn",
-        ida_hexrays.mop_p: "mop_p",  ida_hexrays.mop_sc: "mop_sc",
+        ida_hexrays.mop_z: "mop_z",
+        ida_hexrays.mop_r: "mop_r",
+        ida_hexrays.mop_n: "mop_n",
+        ida_hexrays.mop_d: "mop_d",
+        ida_hexrays.mop_S: "mop_S",
+        ida_hexrays.mop_v: "mop_v",
+        ida_hexrays.mop_b: "mop_b",
+        ida_hexrays.mop_f: "mop_f",
+        ida_hexrays.mop_l: "mop_l",
+        ida_hexrays.mop_a: "mop_a",
+        ida_hexrays.mop_h: "mop_h",
+        ida_hexrays.mop_str: "mop_str",
+        ida_hexrays.mop_c: "mop_c",
+        ida_hexrays.mop_fn: "mop_fn",
+        ida_hexrays.mop_p: "mop_p",
+        ida_hexrays.mop_sc: "mop_sc",
     }
 
     def _fmt_n(op):
@@ -195,22 +206,24 @@ if _HAS_HEXRAYS:
         return " ".join(parts)
 
     _MOP_FORMATTERS = {
-        ida_hexrays.mop_z:   lambda op: "(empty)",
-        ida_hexrays.mop_r:   lambda op: f"reg r{op.r} size={op.size}",
-        ida_hexrays.mop_n:   _fmt_n,
-        ida_hexrays.mop_d:   _fmt_d,
-        ida_hexrays.mop_S:   lambda op: f"stkvar off={op.s.off:#x} size={op.size}",
-        ida_hexrays.mop_v:   lambda op: f"global addr={op.g:#x} size={op.size}",
-        ida_hexrays.mop_b:   lambda op: f"block @{op.b}",
-        ida_hexrays.mop_f:   lambda op: f"callinfo size={op.size}",
-        ida_hexrays.mop_l:   lambda op: f"local idx={op.l.idx} off={op.l.off:#x} size={op.size}",
-        ida_hexrays.mop_a:   lambda op: f"addr_of size={op.size}",
-        ida_hexrays.mop_h:   lambda op: f"helper '{op.helper}' size={op.size}",
+        ida_hexrays.mop_z: lambda op: "(empty)",
+        ida_hexrays.mop_r: lambda op: f"reg r{op.r} size={op.size}",
+        ida_hexrays.mop_n: _fmt_n,
+        ida_hexrays.mop_d: _fmt_d,
+        ida_hexrays.mop_S: lambda op: f"stkvar off={op.s.off:#x} size={op.size}",
+        ida_hexrays.mop_v: lambda op: f"global addr={op.g:#x} size={op.size}",
+        ida_hexrays.mop_b: lambda op: f"block @{op.b}",
+        ida_hexrays.mop_f: lambda op: f"callinfo size={op.size}",
+        ida_hexrays.mop_l: lambda op: (
+            f"local idx={op.l.idx} off={op.l.off:#x} size={op.size}"
+        ),
+        ida_hexrays.mop_a: lambda op: f"addr_of size={op.size}",
+        ida_hexrays.mop_h: lambda op: f"helper '{op.helper}' size={op.size}",
         ida_hexrays.mop_str: lambda op: f"string '{op.cstr}' size={op.size}",
-        ida_hexrays.mop_c:   lambda op: f"cases size={op.size}",
-        ida_hexrays.mop_fn:  lambda op: f"funcnum size={op.size}",
-        ida_hexrays.mop_p:   lambda op: f"pair size={op.size}",
-        ida_hexrays.mop_sc:  lambda op: f"scattered size={op.size}",
+        ida_hexrays.mop_c: lambda op: f"cases size={op.size}",
+        ida_hexrays.mop_fn: lambda op: f"funcnum size={op.size}",
+        ida_hexrays.mop_p: lambda op: f"pair size={op.size}",
+        ida_hexrays.mop_sc: lambda op: f"scattered size={op.size}",
     }
 
 

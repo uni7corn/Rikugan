@@ -5,15 +5,25 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
-from ..core.logging import log_debug
-from .base import tool
-from .script_guard import run_guarded_script
+from ...core.logging import log_debug
+from ...tools.base import tool
+from ...tools.script_guard import run_guarded_script, safe_builtins
 
 # Cached namespace of common IDA modules — populated once, reused across calls.
 _IDA_MODULE_NAMES = (
-    "idaapi", "idautils", "idc", "ida_funcs", "ida_name",
-    "ida_bytes", "ida_segment", "ida_struct", "ida_enum",
-    "ida_typeinf", "ida_nalt", "ida_xref", "ida_kernwin",
+    "idaapi",
+    "idautils",
+    "idc",
+    "ida_funcs",
+    "ida_name",
+    "ida_bytes",
+    "ida_segment",
+    "ida_struct",
+    "ida_enum",
+    "ida_typeinf",
+    "ida_nalt",
+    "ida_xref",
+    "ida_kernwin",
 )
 _cached_namespace: dict | None = None
 
@@ -30,7 +40,7 @@ def _get_base_namespace() -> dict:
                 log_debug(f"Optional IDA module {mod_name!r} not available: {e}")
         _cached_namespace = ns
     # Return a copy so user code can't pollute the cache
-    result: dict = {"__builtins__": __builtins__}
+    result: dict = {"__builtins__": safe_builtins()}
     result.update(_cached_namespace)
     return result
 

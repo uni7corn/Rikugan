@@ -103,10 +103,10 @@ class TestIDAHandler(unittest.TestCase):
         # Should not raise (delivers to ida_kernwin.msg mock or stderr)
         handler.emit(record)
 
-    def test_emit_to_stderr_when_no_ida(self):
-        """When _IDA_AVAILABLE is False, IDAHandler falls back to stderr."""
+    def test_emit_to_stderr_when_no_host_sink(self):
+        """When no host sink is registered, HostOutputHandler falls back to stderr."""
         import io
-        import rikugan.core.logging as log_mod
+        import rikugan.core.log_sinks as sinks_mod
 
         handler = IDAHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -115,8 +115,10 @@ class TestIDAHandler(unittest.TestCase):
             pathname="", lineno=0,
             msg="stderr test", args=(), exc_info=None,
         )
-        saved = log_mod._IDA_AVAILABLE
-        log_mod._IDA_AVAILABLE = False
+        saved_sink = sinks_mod._host_sink
+        saved_resolve = sinks_mod._resolve_host_sink
+        sinks_mod._host_sink = None
+        sinks_mod._resolve_host_sink = lambda: None  # prevent auto-detection
         captured = io.StringIO()
         old_stderr = sys.stderr
         sys.stderr = captured
@@ -124,7 +126,8 @@ class TestIDAHandler(unittest.TestCase):
             handler.emit(record)
         finally:
             sys.stderr = old_stderr
-            log_mod._IDA_AVAILABLE = saved
+            sinks_mod._host_sink = saved_sink
+            sinks_mod._resolve_host_sink = saved_resolve
 
         self.assertIn("stderr test", captured.getvalue())
 
@@ -152,7 +155,7 @@ class TestFlushFileHandler(unittest.TestCase):
             os.unlink(path)
 
     def test_log_file_path_creates_directory(self):
-        from rikugan.core.logging import _log_file_path
+        from rikugan.core.log_sinks import _log_file_path
         path = _log_file_path()
         self.assertTrue(os.path.isdir(os.path.dirname(path)))
         self.assertTrue(path.endswith("rikugan_debug.log"))

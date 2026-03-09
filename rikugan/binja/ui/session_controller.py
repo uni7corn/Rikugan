@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from ...core.config import RikuganConfig
 from ...core.host import get_database_path
-from ..tools.registry import create_default_registry
 from ...ui.session_controller_base import SessionControllerBase
+from ..tools.registry import create_default_registry
 
 
 class BinaryNinjaSessionController(SessionControllerBase):

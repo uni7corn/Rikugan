@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..core.errors import ProviderError
 from ..core.logging import log_debug
@@ -31,12 +30,12 @@ class OpenAICompatProvider(OpenAIProvider):
         if self._client is None:
             try:
                 openai = importlib.import_module("openai")
-            except ImportError:
+            except ImportError as exc:
                 raise ProviderError(
                     "openai package not installed. Run: pip install openai",
                     provider=self._provider_name,
-                )
-            kwargs: Dict[str, Any] = {}
+                ) from exc
+            kwargs: dict[str, Any] = {}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
             elif self.api_base:
@@ -55,11 +54,14 @@ class OpenAICompatProvider(OpenAIProvider):
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            streaming=True, tool_use=True, vision=False,
-            max_context_window=128000, max_output_tokens=4096,
+            streaming=True,
+            tool_use=True,
+            vision=False,
+            max_context_window=128000,
+            max_output_tokens=4096,
         )
 
-    def list_models(self) -> List[ModelInfo]:
+    def list_models(self) -> list[ModelInfo]:
         """Fetch models from the OpenAI-compatible endpoint."""
         try:
             client = self._get_client()
@@ -67,9 +69,13 @@ class OpenAICompatProvider(OpenAIProvider):
             models = []
             for m in response.data:
                 name = getattr(m, "name", None) or m.id
-                models.append(ModelInfo(
-                    id=m.id, name=name, provider=self._provider_name,
-                ))
+                models.append(
+                    ModelInfo(
+                        id=m.id,
+                        name=name,
+                        provider=self._provider_name,
+                    )
+                )
             if models:
                 models.sort(key=lambda x: x.id)
                 return models

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import importlib
-from typing import Annotated, Optional
+from typing import Annotated
 
-from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
-from .base import parse_addr, tool
+from ...core.host import HAS_HEXRAYS as _HAS_HEXRAYS
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 
 ida_funcs = ida_hexrays = ida_name = idc = None
 try:
@@ -15,7 +16,9 @@ try:
     ida_name = importlib.import_module("ida_name")
     idc = importlib.import_module("idc")
 except ImportError:
-    pass  # IDA not present — _HAS_HEXRAYS guard handles graceful degradation
+    log_debug(
+        "IDA annotation modules not available — annotation tools will use guard checks"
+    )
 
 
 @tool(category="annotations", mutating=True)
@@ -31,9 +34,11 @@ def rename_function(
         return f"No function at 0x{ea:x}"
 
     old_name = ida_name.get_name(func.start_ea)
-    ok = ida_name.set_name(func.start_ea, new_name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK)
+    ok = ida_name.set_name(
+        func.start_ea, new_name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK
+    )
     if ok:
-        return f"Renamed 0x{func.start_ea:x}: {old_name} → {new_name}"
+        return f"Renamed 0x{func.start_ea:x}: {old_name} \u2192 {new_name}"
     return f"Failed to rename function at 0x{func.start_ea:x}"
 
 
@@ -61,7 +66,7 @@ def rename_variable(
         if lv.name == old_name:
             ok = ida_hexrays.rename_lvar(cfunc.entry_ea, lv.name, new_name)
             if ok:
-                return f"Renamed variable: {old_name} → {new_name}"
+                return f"Renamed variable: {old_name} \u2192 {new_name}"
             return f"Failed to rename variable {old_name}"
 
     return f"Variable '{old_name}' not found in function at 0x{ea:x}"
@@ -113,7 +118,7 @@ def rename_address(
     old = ida_name.get_name(ea)
     ok = ida_name.set_name(ea, new_name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK)
     if ok:
-        return f"Named 0x{ea:x}: {old or '(unnamed)'} → {new_name}"
+        return f"Named 0x{ea:x}: {old or '(unnamed)'} \u2192 {new_name}"
     return f"Failed to set name at 0x{ea:x}"
 
 

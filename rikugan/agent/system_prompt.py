@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
-from ..constants import SYSTEM_PROMPT_VERSION
 from ..core.logging import log_debug
 from ..core.profile import IOC_FILTER_CATEGORIES
 from ..core.sanitize import sanitize_binary_context, sanitize_memory
@@ -22,7 +21,7 @@ _BASE_PROMPT = IDA_BASE_PROMPT  # backward compat alias
 _MAX_MEMORY_LINES = 200
 
 
-def _load_persistent_memory(idb_dir: str = "") -> Optional[str]:
+def _load_persistent_memory(idb_dir: str = "") -> str | None:
     """Load RIKUGAN.md from the IDB/BNDB directory (first 200 lines).
 
     The file acts as persistent cross-session memory for the agent.
@@ -35,7 +34,7 @@ def _load_persistent_memory(idb_dir: str = "") -> Optional[str]:
         return None
 
     try:
-        with open(md_path, "r", encoding="utf-8") as f:
+        with open(md_path, encoding="utf-8") as f:
             lines = []
             for i, line in enumerate(f):
                 if i >= _MAX_MEMORY_LINES:
@@ -54,14 +53,14 @@ def _load_persistent_memory(idb_dir: str = "") -> Optional[str]:
 
 def build_system_prompt(
     host_name: str = "IDA Pro",
-    binary_info: Optional[str] = None,
-    current_function: Optional[str] = None,
-    current_address: Optional[str] = None,
-    extra_context: Optional[str] = None,
-    tool_names: Optional[List[str]] = None,
-    skill_summary: Optional[str] = None,
-    idb_dir: Optional[str] = None,
-    profile: Optional["AnalysisProfile"] = None,
+    binary_info: str | None = None,
+    current_function: str | None = None,
+    current_address: str | None = None,
+    extra_context: str | None = None,
+    tool_names: list[str] | None = None,
+    skill_summary: str | None = None,
+    idb_dir: str | None = None,
+    profile: AnalysisProfile | None = None,
 ) -> str:
     """Build the full system prompt with optional binary context."""
     base_prompt = _HOST_PROMPTS.get(host_name, IDA_BASE_PROMPT)
@@ -71,10 +70,7 @@ def build_system_prompt(
     # Sanitized to prevent poisoned memory files from injecting instructions.
     memory = _load_persistent_memory(idb_dir or "")
     if memory:
-        parts.append(
-            f"\n## Persistent Memory (RIKUGAN.md)\n"
-            f"{sanitize_memory(memory)}"
-        )
+        parts.append(f"\n## Persistent Memory (RIKUGAN.md)\n{sanitize_memory(memory)}")
 
     # Binary context is untrusted — function names, strings, and metadata
     # originate from the analyzed binary and could contain adversarial content.
@@ -83,12 +79,18 @@ def build_system_prompt(
         log_debug("Profile: hiding binary metadata from system prompt")
     else:
         if binary_info:
-            parts.append(f"\n## Current Binary\n{sanitize_binary_context(binary_info, 'binary_info')}")
+            parts.append(
+                f"\n## Current Binary\n{sanitize_binary_context(binary_info, 'binary_info')}"
+            )
 
         if current_address:
-            parts.append(f"\n## Current Position\nAddress: {sanitize_binary_context(current_address, 'cursor_address')}")
+            parts.append(
+                f"\n## Current Position\nAddress: {sanitize_binary_context(current_address, 'cursor_address')}"
+            )
             if current_function:
-                parts.append(f"Function: {sanitize_binary_context(current_function, 'cursor_function')}")
+                parts.append(
+                    f"Function: {sanitize_binary_context(current_function, 'cursor_function')}"
+                )
 
     if tool_names:
         parts.append(f"\n## Available Tools\n{', '.join(tool_names)}")
@@ -111,14 +113,13 @@ def build_system_prompt(
             )
         if profile.custom_filters:
             parts.append(
-                "\n## Profile Instructions\n" +
-                "\n".join(profile.custom_filters)
+                "\n## Profile Instructions\n" + "\n".join(profile.custom_filters)
             )
         if profile.denied_functions:
             parts.append(
                 "\n## Restricted Functions\n"
-                "Do NOT call or reference the following functions in your analysis:\n" +
-                "\n".join(f"- {fn}" for fn in profile.denied_functions)
+                "Do NOT call or reference the following functions in your analysis:\n"
+                + "\n".join(f"- {fn}" for fn in profile.denied_functions)
             )
 
         # Profile awareness — tell the agent about the active profile

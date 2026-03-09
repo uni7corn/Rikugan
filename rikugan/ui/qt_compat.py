@@ -8,15 +8,42 @@ on Python 3.14.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, Qt, QObject, QTimer  # noqa: F401
+from PySide6.QtCore import QObject, Qt, QTimer, Signal  # noqa: F401
+from PySide6.QtGui import (  # noqa: F401
+    QColor,
+    QFont,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+)
 from PySide6.QtWidgets import (  # noqa: F401
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QScrollArea, QFrame, QSplitter,
-    QDialog, QDialogButtonBox, QComboBox, QLineEdit, QSpinBox,
-    QDoubleSpinBox, QCheckBox, QGroupBox, QFormLayout,
-    QToolButton, QSizePolicy, QTabWidget, QTabBar,
-    QFileDialog, QMenu, QMessageBox,
-    QListWidget, QListWidgetItem,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTabBar,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 QT_BINDING = "PySide6"
@@ -24,5 +51,3 @@ QT_BINDING = "PySide6"
 
 def is_pyside6() -> bool:
     return True
-
-

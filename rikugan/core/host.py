@@ -10,9 +10,9 @@ import importlib
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
-
+from typing import Any
 
 HOST_IDA = "ida"
 HOST_BINARY_NINJA = "binary_ninja"
@@ -45,8 +45,8 @@ except ImportError:
 
 _ctx_lock = threading.RLock()
 _bn_bv: Any = None
-_bn_address: Optional[int] = None
-_bn_navigate_cb: Optional[Callable[[int], bool]] = None
+_bn_address: int | None = None
+_bn_navigate_cb: Callable[[int], bool] | None = None
 
 
 def host_kind() -> str:
@@ -62,6 +62,23 @@ def is_binary_ninja() -> bool:
     return _HOST == HOST_BINARY_NINJA
 
 
+# Convenience module-level flags — importers that just need a bool
+# can use ``from rikugan.core.host import IDA_AVAILABLE`` instead of
+# calling ``is_ida()`` repeatedly.
+IDA_AVAILABLE: bool = is_ida()
+BINARY_NINJA_AVAILABLE: bool = is_binary_ninja()
+
+# Whether the Hex-Rays decompiler SDK is importable.
+if IDA_AVAILABLE:
+    try:
+        importlib.import_module("ida_hexrays")
+        HAS_HEXRAYS: bool = True
+    except ImportError:
+        HAS_HEXRAYS = False
+else:
+    HAS_HEXRAYS = False
+
+
 def host_display_name() -> str:
     if _HOST == HOST_IDA:
         return "IDA Pro"
@@ -72,8 +89,8 @@ def host_display_name() -> str:
 
 def set_binary_ninja_context(
     bv: Any = None,
-    address: Optional[int] = None,
-    navigate_cb: Optional[Callable[[int], bool]] = None,
+    address: int | None = None,
+    navigate_cb: Callable[[int], bool] | None = None,
 ) -> None:
     """Update active Binary Ninja runtime context."""
     with _ctx_lock:
@@ -94,7 +111,7 @@ def get_binary_ninja_view() -> Any:
         return _bn_bv
 
 
-def get_current_address() -> Optional[int]:
+def get_current_address() -> int | None:
     """Return current cursor/address from host context if available."""
     if is_ida():
         try:
@@ -157,7 +174,9 @@ def navigate_to(address: int) -> bool:
                     set_current_address(ea)
                 return ok
             except Exception as e:
-                sys.stderr.write(f"[Rikugan] navigate_to_address cb failed at 0x{ea:x}: {e}\n")
+                sys.stderr.write(
+                    f"[Rikugan] navigate_to_address cb failed at 0x{ea:x}: {e}\n"
+                )
         return False
 
     return False
@@ -167,7 +186,11 @@ def get_user_config_base_dir() -> str:
     """Return host-specific user base directory for Rikugan config/log files."""
     if is_ida():
         try:
-            return _idaapi.get_user_idadir() if _idaapi else os.path.join(str(Path.home()), ".idapro")
+            return (
+                _idaapi.get_user_idadir()
+                if _idaapi
+                else os.path.join(str(Path.home()), ".idapro")
+            )
         except Exception:
             return os.path.join(str(Path.home()), ".idapro")
 

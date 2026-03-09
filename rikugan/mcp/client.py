@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..constants import MCP_DEFAULT_TIMEOUT
 from ..core.errors import MCPConnectionError, MCPError, MCPTimeoutError
@@ -30,7 +30,7 @@ def _unwrap_exception(exc: BaseException) -> str:
     hiding the actual cause behind "unhandled errors in a TaskGroup (N sub-exception)".
     """
     # Python 3.11+ ExceptionGroup
-    if isinstance(exc, BaseExceptionGroup):
+    if isinstance(exc, BaseExceptionGroup):  # type: ignore[name-defined]  # noqa: F821
         parts = []
         for sub in exc.exceptions:
             parts.append(_unwrap_exception(sub))
@@ -54,15 +54,20 @@ def _safe_errlog():
         # Open /dev/null as a real file descriptor that anyio can use.
         # We return the file object (not subprocess.DEVNULL) because the
         # MCP SDK types errlog as TextIO.
-        return open(os.devnull, "w")  # noqa: SIM115 — closed in _async_main finally
+        return open(os.devnull, "w")
 
 
 class MCPToolSchema:
     """Schema for a tool exposed by an MCP server."""
 
-    __slots__ = ("name", "description", "input_schema")
+    __slots__ = ("description", "input_schema", "name")
 
-    def __init__(self, name: str = "", description: str = "", input_schema: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        name: str = "",
+        description: str = "",
+        input_schema: dict[str, Any] | None = None,
+    ):
         self.name = name
         self.description = description
         self.input_schema = input_schema or {}
@@ -86,22 +91,27 @@ class MCPClient:
 
         self.config = config
         self.name = config.name
-        self._tools: List[MCPToolSchema] = []
+        self._tools: list[MCPToolSchema] = []
         self._started = False
         self._healthy = True
         self._running = False
 
         # Async internals — set up in start()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._session: Optional[ClientSession] = None
-        self._shutdown_event: Optional[asyncio.Event] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._session: ClientSession | None = None
+        self._shutdown_event: asyncio.Event | None = None
         self._ready = threading.Event()
-        self._start_error: Optional[str] = None
+        self._start_error: str | None = None
 
     @property
     def is_running(self) -> bool:
-        return self._started and self._running and self._thread is not None and self._thread.is_alive()
+        return (
+            self._started
+            and self._running
+            and self._thread is not None
+            and self._thread.is_alive()
+        )
 
     @property
     def is_healthy(self) -> bool:
@@ -112,7 +122,9 @@ class MCPClient:
 
         Blocks until the server is ready or the timeout expires.
         """
-        log_info(f"MCP[{self.name}]: starting server: {self.config.command} {self.config.args}")
+        log_info(
+            f"MCP[{self.name}]: starting server: {self.config.command} {self.config.args}"
+        )
 
         self._running = True
         self._ready.clear()
@@ -158,21 +170,25 @@ class MCPClient:
         self._loop = None
         self._thread = None
 
-    def get_tools(self) -> List[MCPToolSchema]:
+    def get_tools(self) -> list[MCPToolSchema]:
         return list(self._tools)
 
-    def call_tool(self, name: str, arguments: Dict[str, Any], timeout: float = MCP_DEFAULT_TIMEOUT) -> str:
+    def call_tool(
+        self, name: str, arguments: dict[str, Any], timeout: float = MCP_DEFAULT_TIMEOUT
+    ) -> str:
         """Call an MCP tool and return the result as a string."""
         log_debug(f"MCP[{self.name}]: calling tool {name}")
 
         try:
-            result = self._run_coro(self._async_call_tool(name, arguments), timeout=timeout)
+            result = self._run_coro(
+                self._async_call_tool(name, arguments), timeout=timeout
+            )
         except MCPTimeoutError:
             raise
         except MCPError:
             raise
         except Exception as e:
-            raise MCPError(f"MCP tool {name} error: {e}")
+            raise MCPError(f"MCP tool {name} error: {e}") from e
 
         return result
 
@@ -190,9 +206,11 @@ class MCPClient:
             return future.result(timeout=timeout)
         except TimeoutError:
             future.cancel()
-            raise MCPTimeoutError(f"MCP[{self.name}]: operation timed out after {timeout}s")
+            raise MCPTimeoutError(
+                f"MCP[{self.name}]: operation timed out after {timeout}s"
+            ) from None
 
-    async def _async_call_tool(self, name: str, arguments: Dict[str, Any]) -> str:
+    async def _async_call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Call an MCP tool via the ClientSession."""
         if not self._session:
             raise MCPConnectionError(f"MCP[{self.name}]: no active session")
@@ -220,6 +238,7 @@ class MCPClient:
             msg = _unwrap_exception(e)
             if self._running:
                 import traceback
+
                 log_error(f"MCP[{self.name}]: event loop error: {msg}")
                 log_debug(f"MCP[{self.name}]: traceback:\n{traceback.format_exc()}")
             if not self._ready.is_set():
@@ -244,28 +263,39 @@ class MCPClient:
 
         errlog = _safe_errlog()
         try:
-            async with stdio_client(server_params, errlog=errlog) as (read_stream, write_stream):
+            async with stdio_client(server_params, errlog=errlog) as (
+                read_stream,
+                write_stream,
+            ):
                 async with ClientSession(read_stream, write_stream) as session:
                     self._session = session
 
                     # Initialize handshake (bounded by timeout)
                     init_result = await asyncio.wait_for(
-                        session.initialize(), timeout=handshake_timeout,
+                        session.initialize(),
+                        timeout=handshake_timeout,
                     )
-                    server_info = getattr(init_result, "server_info", None) or getattr(init_result, "serverInfo", None)
+                    server_info = getattr(init_result, "server_info", None) or getattr(
+                        init_result, "serverInfo", None
+                    )
                     log_debug(f"MCP[{self.name}]: initialized, server: {server_info}")
 
                     # Discover tools (bounded by timeout)
                     tools_result = await asyncio.wait_for(
-                        session.list_tools(), timeout=handshake_timeout,
+                        session.list_tools(),
+                        timeout=handshake_timeout,
                     )
                     self._tools = []
                     for t in tools_result.tools:
-                        self._tools.append(MCPToolSchema(
-                            name=t.name,
-                            description=t.description or "",
-                            input_schema=t.inputSchema if hasattr(t, "inputSchema") else {},
-                        ))
+                        self._tools.append(
+                            MCPToolSchema(
+                                name=t.name,
+                                description=t.description or "",
+                                input_schema=t.inputSchema
+                                if hasattr(t, "inputSchema")
+                                else {},
+                            )
+                        )
                     log_info(f"MCP[{self.name}]: discovered {len(self._tools)} tools")
 
                     # Signal that initialization is complete
@@ -286,5 +316,5 @@ class MCPClient:
             if errlog is not sys.stderr:
                 try:
                     errlog.close()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    log_debug(f"MCP[{self.name}]: errlog close failed: {exc}")

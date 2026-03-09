@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import Optional
 
-from .qt_compat import (
-    QFrame, QHBoxLayout, QLabel, QWidget, QTimer,
-)
 from ..core.host import (
     get_binary_ninja_view,
     get_current_address,
@@ -15,18 +11,25 @@ from ..core.host import (
     is_ida,
 )
 from ..core.logging import log_debug
+from .qt_compat import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QTimer,
+    QWidget,
+)
 
 if is_ida():
     try:
         ida_funcs = importlib.import_module("ida_funcs")
         ida_name = importlib.import_module("ida_name")
     except ImportError:
-        ida_funcs = ida_name = None  # type: ignore[assignment]  # noqa: N816
+        ida_funcs = ida_name = None  # type: ignore[assignment]
 else:
-    ida_funcs = ida_name = None  # type: ignore[assignment]  # noqa: N816
+    ida_funcs = ida_name = None  # type: ignore[assignment]
 
 
-def _function_name_at(ea: int) -> Optional[str]:
+def _function_name_at(ea: int) -> str | None:
     if is_ida() and ida_funcs is not None and ida_name is not None:
         try:
             func = ida_funcs.get_func(ea)
@@ -73,8 +76,12 @@ class ContextBar(QFrame):
         self._model_label = self._make_pair("Model:", "\u2014")
         self._tokens_label = self._make_pair("Tokens:", "0")
 
-        for label, value in (self._address_label, self._function_label,
-                             self._model_label, self._tokens_label):
+        for label, value in (
+            self._address_label,
+            self._function_label,
+            self._model_label,
+            self._tokens_label,
+        ):
             layout.addWidget(label)
             layout.addWidget(value)
 

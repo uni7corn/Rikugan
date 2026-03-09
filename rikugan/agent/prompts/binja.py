@@ -2,21 +2,7 @@
 
 from __future__ import annotations
 
-from .base import (
-    ANALYSIS_SECTION,
-    ANTI_REDUNDANCY_SECTION,
-    CLOSING_SECTION,
-    DATA_INTEGRITY_SECTION,
-    DISCIPLINE_SECTION,
-    MUTATION_PLANNING_SECTION,
-    OBFUSCATION_AWARENESS_SECTION,
-    PARALLEL_BATCHING_SECTION,
-    PERSISTENT_MEMORY_SECTION,
-    RENAMING_SECTION,
-    SAFETY_SECTION,
-    SHARED_CAPABILITIES_BULLETS,
-    TOKEN_EFFICIENCY_SECTION,
-)
+from .base import SHARED_CAPABILITIES_BULLETS, assemble_system_prompt
 
 _BINJA_INTRO = """\
 You are Rikugan (六眼) -- a reverse engineering companion living inside Binary Ninja.
@@ -55,7 +41,8 @@ built-in tools over execute_python (Binary Ninja Python scripting).
 _BINJA_CAPABILITIES = (
     "## Capabilities\n"
     "You have direct access to the Binary Ninja database through purpose-built tools:\n"
-    + SHARED_CAPABILITIES_BULLETS + "\n"
+    + SHARED_CAPABILITIES_BULLETS
+    + "\n"
     "- Read IL at any level (LLIL, MLIL, HLIL)\n"
     "- NOP junk instructions to clean decompiler output\n"
     "- Install custom Python IL optimizers (instruction-level or block-level)\n"
@@ -63,34 +50,6 @@ _BINJA_CAPABILITIES = (
     "- Execute Python scripts as a last resort when no built-in tool fits\n"
 )
 
-BINJA_BASE_PROMPT = (
-    _BINJA_INTRO
-    + "\n"
-    + _BINJA_TOOL_USAGE
-    + "\n"
-    + _BINJA_CAPABILITIES
-    + "\n"
-    + DISCIPLINE_SECTION
-    + "\n"
-    + ANTI_REDUNDANCY_SECTION
-    + "\n"
-    + PARALLEL_BATCHING_SECTION
-    + "\n"
-    + RENAMING_SECTION
-    + "\n"
-    + MUTATION_PLANNING_SECTION
-    + "\n"
-    + ANALYSIS_SECTION
-    + "\n"
-    + OBFUSCATION_AWARENESS_SECTION
-    + "\n"
-    + SAFETY_SECTION
-    + "\n"
-    + DATA_INTEGRITY_SECTION
-    + "\n"
-    + TOKEN_EFFICIENCY_SECTION
-    + "\n"
-    + PERSISTENT_MEMORY_SECTION
-    + "\n"
-    + CLOSING_SECTION
+BINJA_BASE_PROMPT = assemble_system_prompt(
+    _BINJA_INTRO, _BINJA_TOOL_USAGE, _BINJA_CAPABILITIES
 )

@@ -5,14 +5,25 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from typing import Any, Dict, Generator, List, NoReturn, Optional
+from collections.abc import Generator
+from typing import Any, NoReturn
 
-from ..core.errors import AuthenticationError, ContextLengthError, ProviderError, RateLimitError
-from ..core.types import (
-    Message, ModelInfo, ProviderCapabilities, Role, StreamChunk,
-    TokenUsage, ToolCall,
+from ..core.errors import (
+    AuthenticationError,
+    ContextLengthError,
+    ProviderError,
+    RateLimitError,
 )
 from ..core.logging import log_debug
+from ..core.types import (
+    Message,
+    ModelInfo,
+    ProviderCapabilities,
+    Role,
+    StreamChunk,
+    TokenUsage,
+    ToolCall,
+)
 from .base import LLMProvider
 
 
@@ -20,20 +31,24 @@ class GeminiProvider(LLMProvider):
     """Adapter for Google Gemini via the google-genai SDK."""
 
     def __init__(self, api_key: str = "", model: str = "gemini-2.0-flash", **kwargs):
-        api_key = api_key or os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+        api_key = (
+            api_key
+            or os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
         super().__init__(api_key=api_key, model=model)
-        self._types = None  # google.genai.types module
+        self._types: Any = None  # google.genai.types module
 
     def _get_client(self):
         if self._client is None:
             try:
                 genai = importlib.import_module("google.genai")
                 self._types = importlib.import_module("google.genai.types")
-            except ImportError:
+            except ImportError as exc:
                 raise ProviderError(
                     "google-genai package not installed. Run: pip install google-genai",
                     provider="gemini",
-                )
+                ) from exc
             if not self.api_key:
                 raise AuthenticationError(provider="gemini")
             self._client = genai.Client(api_key=self.api_key)
@@ -46,39 +61,70 @@ class GeminiProvider(LLMProvider):
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            streaming=True, tool_use=True, vision=True,
-            max_context_window=1000000, max_output_tokens=8192,
+            streaming=True,
+            tool_use=True,
+            vision=True,
+            max_context_window=1000000,
+            max_output_tokens=8192,
             supports_system_prompt=True,
         )
 
-    def _fetch_models_live(self) -> List[ModelInfo]:
+    def _fetch_models_live(self) -> list[ModelInfo]:
         """Fetch content-generation models from the Gemini API."""
         client = self._get_client()
         models = []
         for m in client.models.list():
             name = m.name
-            model_id = name.replace("models/", "") if name.startswith("models/") else name
+            model_id = (
+                name.replace("models/", "") if name.startswith("models/") else name
+            )
             display = getattr(m, "display_name", model_id)
             ctx = getattr(m, "input_token_limit", 1000000) or 1000000
             out = getattr(m, "output_token_limit", 8192) or 8192
-            models.append(ModelInfo(
-                id=model_id,
-                name=display,
-                provider="gemini",
-                context_window=ctx,
-                max_output_tokens=out,
-                supports_tools=True,
-                supports_vision=True,
-            ))
+            models.append(
+                ModelInfo(
+                    id=model_id,
+                    name=display,
+                    provider="gemini",
+                    context_window=ctx,
+                    max_output_tokens=out,
+                    supports_tools=True,
+                    supports_vision=True,
+                )
+            )
         models.sort(key=lambda m: m.id, reverse=True)
         return models if models else self._builtin_models()
 
     @staticmethod
-    def _builtin_models() -> List[ModelInfo]:
+    def _builtin_models() -> list[ModelInfo]:
         return [
-            ModelInfo("gemini-2.5-pro-preview-06-05", "Gemini 2.5 Pro", "gemini", 1000000, 65536, True, True),
-            ModelInfo("gemini-2.0-flash", "Gemini 2.0 Flash", "gemini", 1000000, 8192, True, True),
-            ModelInfo("gemini-2.5-flash-preview-05-20", "Gemini 2.5 Flash", "gemini", 1000000, 65536, True, True),
+            ModelInfo(
+                "gemini-2.5-pro-preview-06-05",
+                "Gemini 2.5 Pro",
+                "gemini",
+                1000000,
+                65536,
+                True,
+                True,
+            ),
+            ModelInfo(
+                "gemini-2.0-flash",
+                "Gemini 2.0 Flash",
+                "gemini",
+                1000000,
+                8192,
+                True,
+                True,
+            ),
+            ModelInfo(
+                "gemini-2.5-flash-preview-05-20",
+                "Gemini 2.5 Flash",
+                "gemini",
+                1000000,
+                65536,
+                True,
+                True,
+            ),
         ]
 
     def _handle_api_error(self, e: Exception) -> NoReturn:
@@ -95,22 +141,36 @@ class GeminiProvider(LLMProvider):
                 raise RateLimitError(provider="gemini") from e
             if isinstance(e, gexc.InvalidArgument):
                 msg = str(e)
-                if "token" in msg.lower() and ("limit" in msg.lower() or "exceed" in msg.lower()):
+                if "token" in msg.lower() and (
+                    "limit" in msg.lower() or "exceed" in msg.lower()
+                ):
                     raise ContextLengthError(msg, provider="gemini") from e
         except ImportError as ie:
-            log_debug(f"google.api_core.exceptions unavailable, using string matching: {ie}")
+            log_debug(
+                f"google.api_core.exceptions unavailable, using string matching: {ie}"
+            )
 
         msg = str(e)
         msg_lower = msg.lower()
-        if "api key" in msg_lower or "permission" in msg_lower or "unauthenticated" in msg_lower or "401" in msg:
+        if (
+            "api key" in msg_lower
+            or "permission" in msg_lower
+            or "unauthenticated" in msg_lower
+            or "401" in msg
+        ):
             raise AuthenticationError(provider="gemini") from e
-        if "rate limit" in msg_lower or "resource exhausted" in msg_lower or "quota" in msg_lower or "429" in msg:
+        if (
+            "rate limit" in msg_lower
+            or "resource exhausted" in msg_lower
+            or "quota" in msg_lower
+            or "429" in msg
+        ):
             raise RateLimitError(provider="gemini") from e
         if "token" in msg_lower and ("limit" in msg_lower or "exceed" in msg_lower):
             raise ContextLengthError(msg, provider="gemini") from e
         raise ProviderError(msg, provider="gemini") from e
 
-    def _build_tools(self, tools: List[Dict[str, Any]]) -> list:
+    def _build_tools(self, tools: list[dict[str, Any]]) -> list:
         """Convert tool definitions to Gemini function declarations.
 
         The new google-genai SDK accepts ``parameters_json_schema`` which
@@ -121,17 +181,19 @@ class GeminiProvider(LLMProvider):
         for t in tools:
             func = t.get("function", t)
             params = func.get("parameters", {})
-            declarations.append(types.FunctionDeclaration(
-                name=func["name"],
-                description=func.get("description", ""),
-                parameters_json_schema=params if params else None,
-            ))
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=func["name"],
+                    description=func.get("description", ""),
+                    parameters_json_schema=params if params else None,
+                )
+            )
         return [types.Tool(function_declarations=declarations)]
 
-    def _format_messages(self, messages: List[Message]) -> list:
+    def _format_messages(self, messages: list[Message]) -> list:
         return self._build_contents(messages)
 
-    def _build_contents(self, messages: List[Message]) -> list:
+    def _build_contents(self, messages: list[Message]) -> list:
         """Convert messages to a list of ``types.Content`` objects.
 
         For assistant messages that have ``_raw_parts`` (preserved from a
@@ -147,47 +209,59 @@ class GeminiProvider(LLMProvider):
                 continue
             elif msg.role == Role.USER:
                 text = msg.content if msg.content else "continue"
-                contents.append(types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=text)],
-                ))
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=text)],
+                    )
+                )
             elif msg.role == Role.ASSISTANT:
                 # Prefer raw parts (preserves thought_signatures)
                 if getattr(msg, "_raw_parts", None):
-                    contents.append(types.Content(
-                        role="model",
-                        parts=list(msg._raw_parts),
-                    ))
+                    contents.append(
+                        types.Content(
+                            role="model",
+                            parts=list(msg._raw_parts),
+                        )
+                    )
                 else:
                     parts = []
                     if msg.content:
                         parts.append(types.Part.from_text(text=msg.content))
                     for tc in msg.tool_calls:
-                        parts.append(types.Part(
-                            function_call=types.FunctionCall(
-                                name=tc.name, args=tc.arguments,
+                        parts.append(
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name=tc.name,
+                                    args=tc.arguments,
+                                )
                             )
-                        ))
+                        )
                     if parts:
                         contents.append(types.Content(role="model", parts=parts))
             elif msg.role == Role.TOOL:
                 parts = []
                 for tr in msg.tool_results:
-                    parts.append(types.Part.from_function_response(
-                        name=tr.name,
-                        response={"result": tr.content},
-                    ))
+                    parts.append(
+                        types.Part.from_function_response(
+                            name=tr.name,
+                            response={"result": tr.content},
+                        )
+                    )
                 if parts:
                     contents.append(types.Content(role="user", parts=parts))
         return contents
 
     def _build_config(
-        self, temperature: float, max_tokens: int, system: str,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        self,
+        temperature: float,
+        max_tokens: int,
+        system: str,
+        tools: list[dict[str, Any]] | None = None,
     ):
         """Build a ``GenerateContentConfig``."""
         types = self._types
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "temperature": temperature,
             "max_output_tokens": max_tokens,
         }
@@ -195,28 +269,29 @@ class GeminiProvider(LLMProvider):
             kwargs["system_instruction"] = system
         if tools:
             kwargs["tools"] = self._build_tools(tools)
-            kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
+            kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(
+                disable=True
+            )
         return types.GenerateContentConfig(**kwargs)
 
-    def chat(
-        self, messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3, max_tokens: int = 4096, system: str = "",
-    ) -> Message:
-        client = self._get_client()
-        config = self._build_config(temperature, max_tokens, system, tools)
-        contents = self._build_contents(messages)
+    def _build_request_kwargs(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
+        temperature: float,
+        max_tokens: int,
+        system: str,
+    ) -> dict[str, Any]:
+        """Build kwargs dict for Gemini generate_content / generate_content_stream."""
+        return {
+            "model": self.model,
+            "contents": self._build_contents(messages),
+            "config": self._build_config(temperature, max_tokens, system, tools),
+        }
 
-        try:
-            response = client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=config,
-            )
-        except Exception as e:
-            self._handle_api_error(e)
-
-        return self._normalize_response(response)
+    def _call_api(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        """Invoke the Gemini generate_content API."""
+        return client.models.generate_content(**kwargs)
 
     def _normalize_response(self, response) -> Message:
         text = ""
@@ -230,11 +305,13 @@ class GeminiProvider(LLMProvider):
                     text += part.text
             if part.function_call:
                 fc = part.function_call
-                tool_calls.append(ToolCall(
-                    id=ToolCall.make_id(),
-                    name=fc.name,
-                    arguments=dict(fc.args) if fc.args else {},
-                ))
+                tool_calls.append(
+                    ToolCall(
+                        id=ToolCall.make_id(),
+                        name=fc.name,
+                        arguments=dict(fc.args) if fc.args else {},
+                    )
+                )
 
         usage = TokenUsage()
         if response.usage_metadata:
@@ -245,28 +322,23 @@ class GeminiProvider(LLMProvider):
                 total_tokens=getattr(um, "total_token_count", 0) or 0,
             )
 
-        msg = Message(role=Role.ASSISTANT, content=text, tool_calls=tool_calls, token_usage=usage)
+        msg = Message(
+            role=Role.ASSISTANT, content=text, tool_calls=tool_calls, token_usage=usage
+        )
         msg._raw_parts = raw_parts
         return msg
 
-    def chat_stream(
-        self, messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.3, max_tokens: int = 4096, system: str = "",
+    def _stream_chunks(
+        self,
+        client: Any,
+        kwargs: dict[str, Any],
     ) -> Generator[StreamChunk, None, None]:
-        client = self._get_client()
-        config = self._build_config(temperature, max_tokens, system, tools)
-        contents = self._build_contents(messages)
-
+        """Yield StreamChunks from the Gemini streaming API."""
         try:
             all_raw_parts: list = []
-            last_usage: Optional[TokenUsage] = None
+            last_usage: TokenUsage | None = None
             _in_thought = False
-            for chunk in client.models.generate_content_stream(
-                model=self.model,
-                contents=contents,
-                config=config,
-            ):
+            for chunk in client.models.generate_content_stream(**kwargs):
                 if not chunk.candidates or not chunk.candidates[0].content:
                     continue
                 parts = chunk.candidates[0].content.parts
@@ -289,7 +361,9 @@ class GeminiProvider(LLMProvider):
                         yield StreamChunk(
                             tool_call_id=call_id,
                             tool_name=fc.name,
-                            tool_args_delta=json.dumps(dict(fc.args) if fc.args else {}),
+                            tool_args_delta=json.dumps(
+                                dict(fc.args) if fc.args else {}
+                            ),
                             is_tool_call_start=True,
                         )
                         yield StreamChunk(

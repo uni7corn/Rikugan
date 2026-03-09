@@ -1,93 +1,34 @@
-"""Logging to the host output window AND a crash-proof log file.
+"""Rikugan logging bootstrap.
 
-The file log at <config_dir>/rikugan/rikugan_debug.log is flushed after every
-write so the last line survives even if the host crashes hard.
+This module is the single public API that all rikugan modules import.
+Sink implementations live in ``core.log_sinks`` — changes to file
+rotation policy, host integration, or telemetry format do not
+propagate to importers of this module.
 
-Structured JSON log is written to rikugan_structured.jsonl for machine parsing.
+Public API:
+    get_logger, log_info, log_warning, log_error, log_debug, log_trace
+    register_host_sink   (re-exported from log_sinks)
+    HostOutputHandler, IDAHandler, _FlushFileHandler  (for tests)
 """
 
 from __future__ import annotations
 
-import importlib
-import json
 import logging
 import os
 import sys
-import time
 import threading
-import traceback
-from typing import Optional
+import time
 
-from ..constants import IDA_AVAILABLE as _IDA_AVAILABLE, BINARY_NINJA_AVAILABLE as _BN_AVAILABLE
-from .host import get_user_config_base_dir
-if _IDA_AVAILABLE:
-    ida_kernwin = importlib.import_module("ida_kernwin")
-_bn_log = None
-if _BN_AVAILABLE:
-    try:
-        _bn_log = importlib.import_module("binaryninja.log")
-    except ImportError as e:
-        sys.stderr.write(f"[Rikugan] Could not import binaryninja.log: {e}\n")
+from .log_sinks import (  # noqa: F401 — re-exported for tests
+    HostOutputHandler,
+    IDAHandler,
+    _FlushFileHandler,
+    _JSONFormatter,
+    _log_file_path,
+    register_host_sink,
+)
 
-_logger: Optional[logging.Logger] = None
-
-# --- Crash-proof file path ---
-
-def _log_file_path() -> str:
-    base = get_user_config_base_dir()
-    d = os.path.join(base, "rikugan")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "rikugan_debug.log")
-
-
-class _FlushFileHandler(logging.FileHandler):
-    """FileHandler that flushes after every record for crash safety."""
-
-    def emit(self, record: logging.LogRecord) -> None:
-        super().emit(record)
-        try:
-            self.stream.flush()
-        except OSError:
-            pass
-
-
-class _JSONFormatter(logging.Formatter):
-    """Formats log records as single-line JSON for machine parsing."""
-
-    def format(self, record: logging.LogRecord) -> str:
-        entry = {
-            "ts": record.created,
-            "level": record.levelname,
-            "thread": record.threadName,
-            "msg": record.getMessage(),
-        }
-        if record.exc_info and record.exc_info[1]:
-            entry["exception"] = self.formatException(record.exc_info)
-        return json.dumps(entry, default=str)
-
-
-class IDAHandler(logging.Handler):
-    """Logging handler that writes to the host's output window."""
-
-    def emit(self, record: logging.LogRecord) -> None:
-        msg = self.format(record)
-        if _IDA_AVAILABLE:
-            try:
-                ida_kernwin.msg(f"{msg}\n")
-            except RuntimeError as e:
-                sys.stderr.write(f"[Rikugan] IDA output window unavailable: {e}\n")
-        elif _bn_log is not None:
-            try:
-                if record.levelno >= logging.ERROR:
-                    _bn_log.log_error(msg)
-                elif record.levelno >= logging.WARNING:
-                    _bn_log.log_warn(msg)
-                else:
-                    _bn_log.log_info(msg)
-            except Exception as e:
-                sys.stderr.write(f"[Rikugan] binaryninja log emit failed: {e}\n")
-        else:
-            sys.stderr.write(f"{msg}\n")
+_logger: logging.Logger | None = None
 
 
 def get_logger() -> logging.Logger:
@@ -102,11 +43,11 @@ def get_logger() -> logging.Logger:
         datefmt="%H:%M:%S",
     )
 
-    # IDA output handler (INFO and above to avoid spamming)
-    ida_handler = IDAHandler()
-    ida_handler.setLevel(logging.INFO)
-    ida_handler.setFormatter(logging.Formatter("[Rikugan] %(levelname)s: %(message)s"))
-    _logger.addHandler(ida_handler)
+    # Host output handler (INFO and above to avoid spamming)
+    host_handler = HostOutputHandler()
+    host_handler.setLevel(logging.INFO)
+    host_handler.setFormatter(logging.Formatter("[Rikugan] %(levelname)s: %(message)s"))
+    _logger.addHandler(host_handler)
 
     # File handler (DEBUG — everything, flush immediately)
     try:
@@ -115,7 +56,9 @@ def get_logger() -> logging.Logger:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(fmt)
         _logger.addHandler(file_handler)
-        _logger.debug(f"=== Rikugan debug log started — {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+        _logger.debug(
+            f"=== Rikugan debug log started — {time.strftime('%Y-%m-%d %H:%M:%S')} ==="
+        )
         _logger.debug(f"Log file: {path}")
         _logger.debug(f"Python: {sys.version}")
         _logger.debug(f"Thread: {threading.current_thread().name}")
@@ -124,7 +67,9 @@ def get_logger() -> logging.Logger:
 
     # Structured JSON log (JSONL format for machine parsing / analytics)
     try:
-        json_path = os.path.join(os.path.dirname(_log_file_path()), "rikugan_structured.jsonl")
+        json_path = os.path.join(
+            os.path.dirname(_log_file_path()), "rikugan_structured.jsonl"
+        )
         json_handler = _FlushFileHandler(json_path, mode="a", encoding="utf-8")
         json_handler.setLevel(logging.INFO)
         json_handler.setFormatter(_JSONFormatter())

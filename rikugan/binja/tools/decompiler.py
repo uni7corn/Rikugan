@@ -6,7 +6,8 @@ from typing import Annotated
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import get_function_at, parse_addr_like, require_bv
+from .compat import parse_addr_like, require_bv
+from .fn_utils import get_function_at
 
 
 def _get_hlil(func):
@@ -50,7 +51,9 @@ def decompile_function(address: Annotated[str, "Function address (hex string)"])
 
     hlil = _get_hlil(func)
     if hlil is None:
-        return f"HLIL not available for function at 0x{int(getattr(func, 'start', ea)):x}"
+        return (
+            f"HLIL not available for function at 0x{int(getattr(func, 'start', ea)):x}"
+        )
     text = _render_hlil(hlil, with_line_numbers=False)
     return text or "(no pseudocode)"
 
@@ -69,13 +72,17 @@ def get_pseudocode(
 
     hlil = _get_hlil(func)
     if hlil is None:
-        return f"HLIL not available for function at 0x{int(getattr(func, 'start', ea)):x}"
+        return (
+            f"HLIL not available for function at 0x{int(getattr(func, 'start', ea)):x}"
+        )
     text = _render_hlil(hlil, with_line_numbers=bool(with_line_numbers))
     return text or "(no pseudocode)"
 
 
 @tool(category="decompiler", requires_decompiler=True)
-def get_decompiler_variables(address: Annotated[str, "Function address (hex string)"]) -> str:
+def get_decompiler_variables(
+    address: Annotated[str, "Function address (hex string)"],
+) -> str:
     """List local variables from the HLIL output."""
     bv = require_bv()
     ea = parse_addr_like(address)

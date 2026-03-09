@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from .qt_compat import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QToolButton, QWidget, QSizePolicy, Qt, Signal, QScrollArea,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    Qt,
+    QVBoxLayout,
+    QWidget,
+    Signal,
 )
 
 if TYPE_CHECKING:
@@ -19,7 +26,7 @@ class MutationEntryWidget(QFrame):
 
     undo_clicked = Signal(int)  # emits the entry index
 
-    def __init__(self, index: int, record: "MutationRecord", parent: QWidget = None):
+    def __init__(self, index: int, record: MutationRecord, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("mutation_entry")
         self._index = index
@@ -32,10 +39,13 @@ class MutationEntryWidget(QFrame):
         self._indicator = QLabel("↩" if record.reversible else "⊘")
         self._indicator.setFixedWidth(20)
         self._indicator.setStyleSheet(
-            "color: #4ec9b0; font-size: 14px;" if record.reversible
+            "color: #4ec9b0; font-size: 14px;"
+            if record.reversible
             else "color: #808080; font-size: 14px;"
         )
-        self._indicator.setToolTip("Reversible" if record.reversible else "Not reversible")
+        self._indicator.setToolTip(
+            "Reversible" if record.reversible else "Not reversible"
+        )
         layout.addWidget(self._indicator)
 
         # Description
@@ -54,7 +64,7 @@ class MutationEntryWidget(QFrame):
         layout.addWidget(self._tool_badge)
 
     @property
-    def record(self) -> "MutationRecord":
+    def record(self) -> MutationRecord:
         return self._record
 
 
@@ -105,7 +115,9 @@ class MutationLogPanel(QFrame):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self._scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+        )
 
         self._entries_widget = QWidget()
         self._entries_layout = QVBoxLayout(self._entries_widget)
@@ -116,9 +128,9 @@ class MutationLogPanel(QFrame):
         self._scroll.setWidget(self._entries_widget)
         main_layout.addWidget(self._scroll)
 
-        self._entries: List[MutationEntryWidget] = []
+        self._entries: list[MutationEntryWidget] = []
 
-    def add_mutation(self, record: "MutationRecord") -> None:
+    def add_mutation(self, record: MutationRecord) -> None:
         """Add a new mutation entry to the log."""
         index = len(self._entries)
         entry = MutationEntryWidget(index, record, self._entries_widget)

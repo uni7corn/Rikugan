@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import importlib
-from typing import Annotated, List, Optional
+from typing import Annotated
 
-from ..core.logging import log_debug
-from .base import parse_addr, tool
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 
 
 def format_function_summary(
@@ -16,8 +16,8 @@ def format_function_summary(
     size: int,
     blocks: int,
     instrs: int,
-    callers: List[str],
-    callees: List[str],
+    callers: list[str],
+    callees: list[str],
 ) -> str:
     """Format a function info summary string (shared between IDA and BN tools)."""
     parts = [
@@ -32,6 +32,7 @@ def format_function_summary(
     if callees:
         parts.append(f"Callees ({len(callees)}): {', '.join(callees)}")
     return "\n".join(parts)
+
 
 try:
     ida_funcs = importlib.import_module("ida_funcs")
@@ -52,9 +53,9 @@ def list_functions(
 
     funcs = list(idautils.Functions())
     total = len(funcs)
-    page = funcs[offset:offset + limit]
+    page = funcs[offset : offset + limit]
 
-    lines = [f"Functions {offset}–{offset + len(page)} of {total}:"]
+    lines = [f"Functions {offset}\u2013{offset + len(page)} of {total}:"]
     for ea in page:
         name = ida_name.get_name(ea)
         lines.append(f"  0x{ea:x}  {name}")
@@ -72,8 +73,6 @@ def get_function_info(address: Annotated[str, "Function address (hex string)"]) 
 
     name = ida_name.get_name(func.start_ea)
     size = func.end_ea - func.start_ea
-    flags = func.flags
-
     # Count basic blocks and instructions
     blocks = 0
     instrs = 0
@@ -106,7 +105,9 @@ def get_function_info(address: Annotated[str, "Function address (hex string)"]) 
                 callees.append(cname)
     callees = list(set(callees))[:10]
 
-    return format_function_summary(name, func.start_ea, func.end_ea, size, blocks, instrs, callers, callees)
+    return format_function_summary(
+        name, func.start_ea, func.end_ea, size, blocks, instrs, callers, callees
+    )
 
 
 @tool(category="functions")

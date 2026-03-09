@@ -7,75 +7,10 @@ by installing PySide6 stubs before importing the module.
 from __future__ import annotations
 
 import json
-import sys
-import types
 import unittest
 
-
-# ---------------------------------------------------------------------------
-# PySide6 stub injection — must happen before tool_widgets import
-# ---------------------------------------------------------------------------
-
-def _ensure_pyside6_stubs() -> None:
-    """Build minimal PySide6 stub modules whose classes support subclassing."""
-
-    def _stub_mod(name: str, **kw) -> types.ModuleType:
-        m = types.ModuleType(name)
-        m.__dict__.update(kw)
-        return m
-
-    # Classes that tool_widgets inherits from must be real types
-    def _qt_class(class_name: str) -> type:
-        return type(class_name, (), {"__init__": lambda self, *a, **k: None})
-
-    # Signal must be descriptor-like so assignments don't crash
-    class _Signal:
-        def __init__(self, *a): pass
-        def connect(self, *a): pass
-        def disconnect(self, *a): pass
-        def emit(self, *a): pass
-        def __get__(self, obj, objtype=None): return self
-
-    widget_names = [
-        "QApplication", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel",
-        "QPushButton", "QPlainTextEdit", "QScrollArea", "QFrame", "QSplitter",
-        "QDialog", "QDialogButtonBox", "QComboBox", "QLineEdit", "QSpinBox",
-        "QDoubleSpinBox", "QCheckBox", "QGroupBox", "QFormLayout",
-        "QToolButton", "QSizePolicy", "QTabWidget", "QTabBar",
-        "QFileDialog", "QMenu", "QMessageBox",
-    ]
-    gui_names = ["QSyntaxHighlighter", "QTextCharFormat", "QColor", "QFont"]
-
-    _sentinel = type("_Qt", (), {})()  # non-class sentinel for non-subclassed attrs
-
-    sys.modules.setdefault("PySide6", _stub_mod("PySide6"))
-    sys.modules.setdefault(
-        "PySide6.QtCore",
-        _stub_mod(
-            "PySide6.QtCore",
-            Signal=_Signal,
-            Qt=_sentinel,
-            QObject=_qt_class("QObject"),
-            QTimer=_qt_class("QTimer"),
-        ),
-    )
-    sys.modules.setdefault(
-        "PySide6.QtWidgets",
-        _stub_mod(
-            "PySide6.QtWidgets",
-            **{n: _qt_class(n) for n in widget_names},
-        ),
-    )
-    sys.modules.setdefault(
-        "PySide6.QtGui",
-        _stub_mod(
-            "PySide6.QtGui",
-            **{n: _qt_class(n) for n in gui_names},
-        ),
-    )
-
-
-_ensure_pyside6_stubs()
+from tests.qt_stubs import ensure_pyside6_stubs
+ensure_pyside6_stubs()
 
 from rikugan.ui.tool_widgets import (  # noqa: E402
     _strip_mcp_prefix,

@@ -2,30 +2,45 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
-from .qt_compat import (
-    QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QPushButton, QTimer,
-    QTabWidget, QTabBar, QToolButton, Signal, QFileDialog, QMenu, QMessageBox, Qt,
-    QCheckBox, QDialog, QDialogButtonBox,
-)
-from .styles import DARK_THEME
-from .chat_view import ChatView
-from .input_area import InputArea
-from .context_bar import ContextBar
-from .mutation_log_view import MutationLogPanel
-from .tool_widgets import _SharedSpinnerTimer
-from .settings_dialog import SettingsDialog, _resolve_auth_cached
-from ..core.config import RikuganConfig
-from ..core.logging import log_error, log_info, log_debug
-from ..agent.turn import TurnEvent, TurnEventType
 from ..agent.mutation import MutationRecord
+from ..agent.turn import TurnEvent, TurnEventType
+from ..core.config import RikuganConfig
+from ..core.logging import log_debug, log_error, log_info
 from ..core.types import Role
+from ..providers.auth_cache import resolve_auth_cached
+from .chat_view import ChatView
+from .context_bar import ContextBar
+from .input_area import InputArea
+from .mutation_log_view import MutationLogPanel
+from .qt_compat import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QHBoxLayout,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    Qt,
+    QTabBar,
+    QTabWidget,
+    QTimer,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+)
+from .settings_dialog import SettingsDialog
+from .styles import DARK_THEME
+from .tool_widgets import _SharedSpinnerTimer
 
 _TOOL_RESULT_TRUNCATE_CHARS = 2000
 _SMALL_BTN_STYLE = (
@@ -40,20 +55,20 @@ _CANCEL_BTN_STYLE = (
 )
 
 _SANITIZER_TAG_RE = re.compile(
-    r'^\[The following is (?:a tool execution result|output from an EXTERNAL MCP server)'
-    r'[^\]]*\]\n?',
+    r"^\[The following is (?:a tool execution result|output from an EXTERNAL MCP server)"
+    r"[^\]]*\]\n?",
     re.MULTILINE,
 )
 _SANITIZER_WRAP_RE = re.compile(
-    r'<(?:tool_result|mcp_result|binary_data|persistent_memory|skill)\b[^>]*>\n?'
-    r'|</(?:tool_result|mcp_result|binary_data|persistent_memory|skill)>\n?',
+    r"<(?:tool_result|mcp_result|binary_data|persistent_memory|skill)\b[^>]*>\n?"
+    r"|</(?:tool_result|mcp_result|binary_data|persistent_memory|skill)>\n?",
 )
 
 
 def _strip_sanitizer_tags(text: str) -> str:
     """Remove sanitization wrappers added for the LLM from exported content."""
-    text = _SANITIZER_TAG_RE.sub('', text)
-    text = _SANITIZER_WRAP_RE.sub('', text)
+    text = _SANITIZER_TAG_RE.sub("", text)
+    text = _SANITIZER_WRAP_RE.sub("", text)
     return text.strip()
 
 
@@ -209,7 +224,7 @@ class RikuganPanelCore(QWidget):
     def __init__(
         self,
         controller_factory: Callable[[RikuganConfig], Any],
-        ui_hooks_factory: Optional[Callable[[Callable[[], Any]], Any]] = None,
+        ui_hooks_factory: Callable[[Callable[[], Any]], Any] | None = None,
         parent: QWidget = None,
     ):
         super().__init__(parent)
@@ -219,7 +234,7 @@ class RikuganPanelCore(QWidget):
             f"model={self._config.provider.model}",
         )
         self._ctrl = controller_factory(self._config)
-        self._poll_timer: Optional[QTimer] = None
+        self._poll_timer: QTimer | None = None
         self._polling = False
         self._pending_answer = False
         self._awaiting_button_approval = False
@@ -228,14 +243,14 @@ class RikuganPanelCore(QWidget):
         self._ui_hooks = None
 
         # Tab-to-ChatView mapping
-        self._chat_views: Dict[str, ChatView] = {}
-        self._context_bar: Optional[ContextBar] = None
-        self._mutation_panel: Optional[MutationLogPanel] = None
-        self._skills_refresh_timer: Optional[QTimer] = None
+        self._chat_views: dict[str, ChatView] = {}
+        self._context_bar: ContextBar | None = None
+        self._mutation_panel: MutationLogPanel | None = None
+        self._skills_refresh_timer: QTimer | None = None
 
         def _warm_oauth() -> None:
             try:
-                _resolve_auth_cached()
+                resolve_auth_cached()
             except Exception as e:
                 log_debug(f"OAuth warm-up failed: {e}")
 
@@ -295,7 +310,8 @@ class RikuganPanelCore(QWidget):
         if self._ui_hooks_factory is not None:
             try:
                 self._ui_hooks = self._ui_hooks_factory(lambda: self)
-                self._ui_hooks.hook()
+                if self._ui_hooks is not None:
+                    self._ui_hooks.hook()
             except Exception as e:
                 log_debug(f"UI hook setup failed: {e}")
                 self._ui_hooks = None
@@ -429,7 +445,11 @@ class RikuganPanelCore(QWidget):
         has_messages = session and session.messages
         if has_messages:
             ctx_window = self._config.provider.context_window or 200000
-            used = session.last_prompt_tokens if session.last_prompt_tokens is not None else session.total_usage.total_tokens
+            used = (
+                session.last_prompt_tokens
+                if session.last_prompt_tokens is not None
+                else session.total_usage.total_tokens
+            )
             pct = min(int(used * 100 / ctx_window), 100) if ctx_window > 0 else 0
             result = self._show_new_chat_dialog(pct)
             if result == "no":
@@ -500,11 +520,14 @@ class RikuganPanelCore(QWidget):
                 "QCheckBox { color: #d4d4d4; font-size: 12px; }"
             )
             layout = QVBoxLayout(dlg)
-            cb = QCheckBox(f"Include subagent logs ({len(session.subagent_logs)} subagent runs)")
+            cb = QCheckBox(
+                f"Include subagent logs ({len(session.subagent_logs)} subagent runs)"
+            )
             cb.setChecked(True)
             layout.addWidget(cb)
             buttons = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                QDialogButtonBox.StandardButton.Ok
+                | QDialogButtonBox.StandardButton.Cancel
             )
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
@@ -516,20 +539,26 @@ class RikuganPanelCore(QWidget):
         label = self._ctrl.tab_label(tab_id).replace("/", "-").replace("\\", "-")
         default_name = f"rikugan-{label}-{time.strftime('%Y%m%d-%H%M%S')}.md"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Chat", default_name,
+            self,
+            "Export Chat",
+            default_name,
             "Markdown (*.md);;Text (*.txt);;All Files (*)",
         )
         if not path:
             return
         try:
-            self._export_session_to_file(session, path, include_subagents=include_subagents)
+            self._export_session_to_file(
+                session, path, include_subagents=include_subagents
+            )
             log_info(f"Exported chat to {path}")
         except Exception as e:
             log_error(f"Failed to export chat: {e}")
 
     @staticmethod
     def _export_session_to_file(
-        session, path: str, include_subagents: bool = False,
+        session,
+        path: str,
+        include_subagents: bool = False,
     ) -> None:
         """Write session messages to a Markdown file."""
         lines = ["# Rikugan Chat Export\n"]
@@ -570,7 +599,7 @@ class RikuganPanelCore(QWidget):
         if include_subagents:
             for key, msgs in subagent_logs.items():
                 if key.startswith("exploration_"):
-                    lines.append(f"\n---\n\n### Exploration Subagent Log\n")
+                    lines.append("\n---\n\n### Exploration Subagent Log\n")
                     lines.append(_export_format_subagent_log(msgs))
 
         with open(path, "w", encoding="utf-8") as f:
@@ -592,7 +621,7 @@ class RikuganPanelCore(QWidget):
         self._ctrl.switch_tab(tab_id)
         self._update_token_display()
 
-    def _tab_id_at_index(self, index: int) -> Optional[str]:
+    def _tab_id_at_index(self, index: int) -> str | None:
         """Find the tab_id for a given tab index via the stored property (O(1))."""
         widget = self._tab_widget.widget(index)
         if widget is None:
@@ -606,18 +635,22 @@ class RikuganPanelCore(QWidget):
                 return tid
         return None
 
-    def _active_chat_view(self) -> Optional[ChatView]:
+    def _active_chat_view(self) -> ChatView | None:
         """Return the ChatView for the currently active tab."""
         return self._chat_views.get(self._ctrl.active_tab_id)
 
-    def _update_token_display(self, token_count: Optional[int] = None) -> None:
+    def _update_token_display(self, token_count: int | None = None) -> None:
         """Update the context bar token display with context window percentage."""
         if self._context_bar is None:
             return
         if token_count is None:
             session = self._ctrl.session
             # Show current context size (last prompt), not cumulative total
-            token_count = session.last_prompt_tokens if session.last_prompt_tokens is not None else session.total_usage.total_tokens
+            token_count = (
+                session.last_prompt_tokens
+                if session.last_prompt_tokens is not None
+                else session.total_usage.total_tokens
+            )
         ctx_window = self._config.provider.context_window or 0
         self._context_bar.set_tokens(token_count, ctx_window)
 
@@ -635,6 +668,8 @@ class RikuganPanelCore(QWidget):
     # --- Public API ---
 
     def prefill_input(self, text: str, auto_submit: bool = False) -> None:
+        if self._is_shutdown:
+            return
         self._input_area.setPlainText(text)
         if auto_submit:
             self._input_area.clear()
@@ -663,7 +698,13 @@ class RikuganPanelCore(QWidget):
 
     def on_database_changed(self, new_path: str) -> None:
         """Called when the user opens a different file."""
-        normalized = os.path.normcase(os.path.realpath(os.path.abspath(new_path))) if new_path else ""
+        if self._is_shutdown:
+            return
+        normalized = (
+            os.path.normcase(os.path.realpath(os.path.abspath(new_path)))
+            if new_path
+            else ""
+        )
         if normalized == self._ctrl._idb_path:
             return
         self._ctrl.reset_for_new_file(normalized)
@@ -724,15 +765,21 @@ class RikuganPanelCore(QWidget):
 
     def _on_settings(self) -> None:
         try:
-            dlg = SettingsDialog(self._config, registry=self._ctrl.provider_registry,
-                                tool_registry=self._ctrl.tool_registry)
+            dlg = SettingsDialog(
+                self._config,
+                registry=self._ctrl.provider_registry,
+                tool_registry=self._ctrl.tool_registry,
+            )
             result = dlg.exec_()
             if result:
                 self._config.save()
                 self._ctrl.update_settings()
                 self._ctrl.reload_mcp()
-                self._context_bar.set_model(self._config.provider.model)
-                log_info(f"Settings updated: {self._config.provider.name}/{self._config.provider.model}")
+                if self._context_bar is not None:
+                    self._context_bar.set_model(self._config.provider.model)
+                log_info(
+                    f"Settings updated: {self._config.provider.name}/{self._config.provider.model}"
+                )
             dlg.setParent(None)
         except Exception as e:
             log_error(f"Settings dialog error: {e}")
@@ -782,6 +829,7 @@ class RikuganPanelCore(QWidget):
             return
 
         self._ensure_poll_timer()
+        assert self._poll_timer is not None
         self._poll_timer.start(50)
 
     def _ensure_poll_timer(self) -> None:
@@ -826,20 +874,33 @@ class RikuganPanelCore(QWidget):
             # Use prompt_tokens from the event directly — session hasn't
             # been updated yet during streaming, so session.last_prompt_tokens
             # would be stale.  prompt_tokens reflects current context size.
-            token_count = event.usage.context_tokens if event.usage.context_tokens > 0 else event.usage.total_tokens
+            token_count = (
+                event.usage.context_tokens
+                if event.usage.context_tokens > 0
+                else event.usage.total_tokens
+            )
             if token_count > 0:
                 self._update_token_display(token_count)
-        if event.type in (TurnEventType.USER_QUESTION, TurnEventType.SAVE_APPROVAL_REQUEST,
-                          TurnEventType.PLAN_GENERATED):
+        if event.type in (
+            TurnEventType.USER_QUESTION,
+            TurnEventType.SAVE_APPROVAL_REQUEST,
+            TurnEventType.PLAN_GENERATED,
+        ):
             self._pending_answer = True
             # Plan approvals, save approvals, and any question with
             # predefined options MUST be answered via buttons only.
             # Disable text input so free-text ("continue", "redo", etc.)
             # cannot bypass the approval gate.
-            has_options = bool(event.metadata.get("options")) if event.metadata else False
-            allow_text = bool(event.metadata.get("allow_text")) if event.metadata else False
-            needs_button = event.type in (TurnEventType.PLAN_GENERATED,
-                                          TurnEventType.SAVE_APPROVAL_REQUEST) or (has_options and not allow_text)
+            has_options = (
+                bool(event.metadata.get("options")) if event.metadata else False
+            )
+            allow_text = (
+                bool(event.metadata.get("allow_text")) if event.metadata else False
+            )
+            needs_button = event.type in (
+                TurnEventType.PLAN_GENERATED,
+                TurnEventType.SAVE_APPROVAL_REQUEST,
+            ) or (has_options and not allow_text)
             if needs_button:
                 self._awaiting_button_approval = True
             self._set_running(False)
@@ -888,7 +949,6 @@ class RikuganPanelCore(QWidget):
         restored = self._ctrl.restore_sessions()
         if restored:
             # Remove the default empty tab if it was replaced
-            default_cv = None
             for tid, cv in list(self._chat_views.items()):
                 if tid not in self._ctrl.tab_ids:
                     # This tab was removed during restore
@@ -902,16 +962,16 @@ class RikuganPanelCore(QWidget):
 
             for tab_id, session in restored:
                 label = self._ctrl.tab_label(tab_id)
-                chat_view = self._create_tab(tab_id, label)
-                chat_view.restore_from_messages(session.messages)
+                cv = self._create_tab(tab_id, label)
+                cv.restore_from_messages(session.messages)
 
             # Activate the last (most recent) tab
             if restored:
                 last_tab_id = restored[-1][0]
-                cv = self._chat_views.get(last_tab_id)
-                if cv:
+                last_cv = self._chat_views.get(last_tab_id)
+                if last_cv:
                     for i in range(self._tab_widget.count()):
-                        if self._tab_widget.widget(i) is cv:
+                        if self._tab_widget.widget(i) is last_cv:
                             self._tab_widget.setCurrentIndex(i)
                             break
                 self._update_token_display()
@@ -919,9 +979,9 @@ class RikuganPanelCore(QWidget):
             # No saved sessions — try legacy single-session restore
             session = self._ctrl.restore_session()
             if session:
-                chat_view = self._active_chat_view()
-                if chat_view:
-                    chat_view.restore_from_messages(session.messages)
+                legacy_cv = self._active_chat_view()
+                if legacy_cv:
+                    legacy_cv.restore_from_messages(session.messages)
                 self._update_token_display()
 
     # --- Mutation log integration ---

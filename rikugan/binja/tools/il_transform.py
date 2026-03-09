@@ -2,31 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, Optional
+from typing import Annotated, Any
 
 from ...core.logging import log_debug, log_error
 from ...tools.base import tool
-from .common import (
-    get_function_at,
-    get_function_name,
-    get_bn_module,
-    parse_addr_like,
-    require_bv,
-    update_analysis_and_wait,
-)
-
+from ...tools.script_guard import safe_builtins
+from .compat import get_bn_module, parse_addr_like, require_bv, update_analysis_and_wait
+from .fn_utils import get_function_at, get_function_name
 
 # ---------------------------------------------------------------------------
 # Internal state for workflow management
 # ---------------------------------------------------------------------------
 
-_installed_workflows: Dict[str, Dict[str, Any]] = {}
+_installed_workflows: dict[str, dict[str, Any]] = {}
 """name -> {"workflow": ..., "activity": ..., "description": ...}"""
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_il_func(func: Any, level: str = "mlil") -> Any:
     """Get IL function at the requested level."""
@@ -79,15 +74,18 @@ def _replace_expr(il_func: Any, old_expr: Any, new_expr: Any) -> bool:
 # Tools
 # ---------------------------------------------------------------------------
 
+
 @tool(category="il", requires_decompiler=True, mutating=True)
 def il_replace_expr(
     address: Annotated[str, "Function address (hex string)"],
     expr_index: Annotated[int, "IL expression index to replace"],
     replacement_type: Annotated[
         str,
-        "Replacement type: 'const' (constant value), 'nop', or 'copy_from' (copy from another index)"
+        "Replacement type: 'const' (constant value), 'nop', or 'copy_from' (copy from another index)",
     ],
-    value: Annotated[int, "Value for 'const' type, or source index for 'copy_from'"] = 0,
+    value: Annotated[
+        int, "Value for 'const' type, or source index for 'copy_from'"
+    ] = 0,
     size: Annotated[int, "Size in bytes for the replacement expression"] = 0,
     level: Annotated[str, "IL level: 'llil' or 'mlil'"] = "mlil",
 ) -> str:
@@ -293,10 +291,11 @@ def il_remove_block(
 
 @tool(category="il", requires_decompiler=True, mutating=True)
 def patch_branch(
-    address: Annotated[str, "Address of the conditional branch instruction (hex string)"],
+    address: Annotated[
+        str, "Address of the conditional branch instruction (hex string)"
+    ],
     action: Annotated[
-        str,
-        "Action: 'force_true', 'force_false', 'invert', or 'unconditional'"
+        str, "Action: 'force_true', 'force_false', 'invert', or 'unconditional'"
     ],
 ) -> str:
     """Force conditional branch at byte level (force_true/false/invert/unconditional)."""
@@ -356,7 +355,7 @@ def patch_branch(
     return f"Patched branch at 0x{ea:x}: {orig_hex} -> {new_hex} ({action})"
 
 
-def _patch_x86_branch(orig: bytes, action: str, length: int) -> Optional[bytes]:
+def _patch_x86_branch(orig: bytes, action: str, length: int) -> bytes | None:
     """Patch x86/x64 conditional branch bytes."""
     opcode = orig[0]
 
@@ -442,7 +441,7 @@ def install_il_workflow(
         "Python code defining a transform(analysis_context, il_func) function. "
         "The function receives an AnalysisContext and the IL function to modify. "
         "Use il_func.replace_expr() for modifications, then call "
-        "il_func.finalize() and il_func.generate_ssa_form()."
+        "il_func.finalize() and il_func.generate_ssa_form().",
     ],
 ) -> str:
     """Register a Python function as a workflow activity at a pipeline stage.
@@ -461,9 +460,9 @@ def install_il_workflow(
         return "il_level must be 'llil' or 'mlil'"
 
     # Compile the user code — exec is expected to define transform() in ns
-    ns: dict = {"__builtins__": __builtins__, "transform": None}
+    ns: dict = {"__builtins__": safe_builtins(), "transform": None}
     try:
-        exec(python_code, ns)  # noqa: S102 — user-authored workflow transform
+        exec(python_code, ns)
     except Exception as e:
         return f"Failed to compile transform code: {e}"
 
@@ -494,7 +493,6 @@ def install_il_workflow(
         # Create wrapper that extracts IL and calls user transform
         def _activity_wrapper(analysis_context):
             try:
-                func = analysis_context.function
                 if il_level == "llil":
                     il_func = analysis_context.llil
                 else:

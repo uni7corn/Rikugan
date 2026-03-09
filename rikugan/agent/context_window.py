@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
-from ..core.types import Message, Role, TokenUsage
 from ..core.logging import log_info
 from ..core.sanitize import strip_injection_markers
+from ..core.types import Message, Role, TokenUsage
 
 
 class ContextWindowManager:
@@ -40,7 +38,7 @@ class ContextWindowManager:
     def should_compact(self) -> bool:
         return self.is_near_limit
 
-    def compact_messages(self, messages: List[Message]) -> List[Message]:
+    def compact_messages(self, messages: list[Message]) -> list[Message]:
         """Compact the message list to reduce token usage.
 
         Strategy:
@@ -72,7 +70,9 @@ class ContextWindowManager:
                 text = strip_injection_markers(msg.content[:150]) if msg.content else ""
                 tool_names = [tc.name for tc in msg.tool_calls]
                 if tool_names:
-                    summary_parts.append(f"Assistant used tools: {', '.join(tool_names)}")
+                    summary_parts.append(
+                        f"Assistant used tools: {', '.join(tool_names)}"
+                    )
                 if text:
                     summary_parts.append(f"Assistant said: {text}...")
             elif msg.role == Role.TOOL:
@@ -83,7 +83,7 @@ class ContextWindowManager:
         summary_text = "\n".join(summary_parts)
         summary_msg = Message(role=Role.USER, content=summary_text)
 
-        compacted = head + [summary_msg] + tail
+        compacted = [*head, summary_msg, *tail]
         log_info(
             f"Context compacted: {len(messages)} → {len(compacted)} messages "
             f"({len(middle)} messages summarized)"

@@ -3,22 +3,34 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from collections.abc import Generator
+from typing import Any, NoReturn
 
 from ..core.logging import log_debug
-from ..core.types import Message, ModelInfo, ProviderCapabilities, StreamChunk, TokenUsage
+from ..core.types import (
+    Message,
+    ModelInfo,
+    ProviderCapabilities,
+    StreamChunk,
+)
 
 
 class LLMProvider(ABC):
     """Abstract base for all LLM provider adapters.
 
-    Subclasses must implement: ``name``, ``capabilities``, ``chat``,
-    ``chat_stream``, ``_get_client``, ``_fetch_models_live``,
-    ``_builtin_models``.
+    The translation pipeline (format -> build kwargs -> call API -> normalize)
+    is implemented once in the concrete ``chat`` and ``chat_stream`` methods.
+    Subclasses supply provider-specific hooks:
 
-    Common patterns (lazy client init, list-models-with-fallback) are
-    implemented here so that subclasses only override the provider-specific
-    parts.
+    * ``_format_messages`` -- convert internal ``Message`` list to wire format
+    * ``_build_request_kwargs`` -- assemble the full request dict
+    * ``_call_api`` -- invoke the SDK and return the raw response
+    * ``_normalize_response`` -- convert the raw response to a ``Message``
+    * ``_handle_api_error`` -- translate SDK exceptions to Rikugan errors
+    * ``_stream_chunks`` -- yield ``StreamChunk`` objects from the provider stream
+
+    Subclasses must also implement: ``name``, ``capabilities``,
+    ``_get_client``, ``_fetch_models_live``, ``_builtin_models``.
     """
 
     def __init__(self, api_key: str = "", api_base: str = "", model: str = ""):
@@ -47,43 +59,105 @@ class LLMProvider(ABC):
         ...
 
     @abstractmethod
-    def _fetch_models_live(self) -> List[ModelInfo]:
+    def _fetch_models_live(self) -> list[ModelInfo]:
         """Fetch models from the remote API. May raise on failure."""
         ...
 
     @staticmethod
     @abstractmethod
-    def _builtin_models() -> List[ModelInfo]:
+    def _builtin_models() -> list[ModelInfo]:
         """Return built-in fallback model list (no network required)."""
         ...
 
+    # -- Translation pipeline hooks (abstract) ---------------------------------
+
     @abstractmethod
+    def _format_messages(self, messages: list[Message]) -> Any:
+        """Convert internal messages to provider wire format."""
+
+    @abstractmethod
+    def _build_request_kwargs(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
+        temperature: float,
+        max_tokens: int,
+        system: str,
+    ) -> dict[str, Any]:
+        """Assemble the full request kwargs for the provider SDK call."""
+
+    @abstractmethod
+    def _call_api(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        """Invoke the provider SDK and return the raw response object."""
+
+    @abstractmethod
+    def _normalize_response(self, raw: Any) -> Message:
+        """Convert provider response to internal Message."""
+
+    @abstractmethod
+    def _handle_api_error(self, e: Exception) -> NoReturn:
+        """Translate a provider SDK exception into a Rikugan error."""
+
+    @abstractmethod
+    def _stream_chunks(
+        self,
+        client: Any,
+        kwargs: dict[str, Any],
+    ) -> Generator[StreamChunk, None, None]:
+        """Yield ``StreamChunk`` objects from the provider's streaming API.
+
+        Receives the same kwargs produced by ``_build_request_kwargs``.
+        The implementation may modify *kwargs* (e.g. add ``stream=True``)
+        before passing them to the SDK.
+        """
+
+    # -- Concrete pipeline implementations -------------------------------------
+
     def chat(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.3,
         max_tokens: int = 4096,
         system: str = "",
     ) -> Message:
-        """Non-streaming chat completion."""
-        ...
+        """Non-streaming chat completion.
 
-    @abstractmethod
+        Orchestrates the standard pipeline:
+        get client -> build kwargs -> call API -> normalize response.
+        """
+        client = self._get_client()
+        kwargs = self._build_request_kwargs(
+            messages, tools, temperature, max_tokens, system
+        )
+        try:
+            raw = self._call_api(client, kwargs)
+        except Exception as e:
+            self._handle_api_error(e)
+        return self._normalize_response(raw)
+
     def chat_stream(
         self,
-        messages: List[Message],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.3,
         max_tokens: int = 4096,
         system: str = "",
     ) -> Generator[StreamChunk, None, None]:
-        """Streaming chat completion. Yields StreamChunks."""
-        ...
+        """Streaming chat completion.
+
+        Builds request kwargs then delegates to ``_stream_chunks`` for the
+        provider-specific streaming state machine.
+        """
+        client = self._get_client()
+        kwargs = self._build_request_kwargs(
+            messages, tools, temperature, max_tokens, system
+        )
+        yield from self._stream_chunks(client, kwargs)
 
     # -- Concrete shared implementations ---------------------------------------
 
-    def list_models(self) -> List[ModelInfo]:
+    def list_models(self) -> list[ModelInfo]:
         """List available models.
 
         Attempts a live API fetch via ``_fetch_models_live()``.  On any
@@ -96,20 +170,12 @@ class LLMProvider(ABC):
             log_debug(f"{self.name} list_models failed, using builtins: {exc}")
             return self._builtin_models()
 
-    @abstractmethod
-    def _format_messages(self, messages: List[Message]) -> Any:
-        """Convert internal messages to provider wire format."""
-
-    @abstractmethod
-    def _normalize_response(self, raw: Any) -> Message:
-        """Convert provider response to internal Message."""
-
     def ensure_ready(self) -> None:
         """Pre-initialize the provider (imports, client objects, etc.).
 
         MUST be called on the main thread before handing the provider to a
         background thread.  Python 3.14 crashes when heavy C-extension
-        packages (httpx, h2, ssl …) are first imported from a non-main
+        packages (httpx, h2, ssl ...) are first imported from a non-main
         thread, so providers that lazy-import SDK packages override
         ``_init_client`` to force the import on the caller's thread.
         """
@@ -119,7 +185,7 @@ class LLMProvider(ABC):
         """Pre-import SDK and create client. Delegates to ``_get_client()``."""
         self._get_client()
 
-    def auth_status(self) -> Tuple[str, str]:
+    def auth_status(self) -> tuple[str, str]:
         """Return (label, status_type) describing the current auth state.
 
         status_type is one of: "ok", "error", "none".
@@ -130,9 +196,14 @@ class LLMProvider(ABC):
         return "", "none"
 
     def validate_key(self) -> bool:
-        """Quick check that the API key is valid."""
+        """Probe whether current credentials can reach the API.
+
+        Calls ``_fetch_models_live()`` directly (bypassing the fallback
+        in ``list_models()``) so that authentication errors are surfaced
+        rather than silently masked by built-in model lists.
+        """
         try:
-            self.list_models()
+            self._fetch_models_live()
             return True
         except Exception as e:
             log_debug(f"validate_key failed for {self.name}: {e}")

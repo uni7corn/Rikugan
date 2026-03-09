@@ -24,22 +24,21 @@ import platform
 from pathlib import Path
 
 try:
-    import tomllib                      # Python 3.11+
+    import tomllib  # Python 3.11+
 except ModuleNotFoundError:
     try:
-        import tomli as tomllib         # pip backport for 3.10 and earlier
+        import tomli as tomllib  # pip backport for 3.10 and earlier
     except ModuleNotFoundError:
-        tomllib = None                  # type: ignore[assignment]
-from typing import Dict, List
+        tomllib = None  # type: ignore[assignment]
 
 from ..core.logging import log_debug, log_info
-from ..skills.loader import SkillDefinition, discover_skills
 from ..mcp.config import MCPServerConfig
-
+from ..skills.loader import SkillDefinition, discover_skills
 
 # ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
+
 
 def get_claude_code_base() -> Path:
     """Return the Claude Code config directory (~/.claude).
@@ -77,26 +76,27 @@ def _get_claude_managed_mcp_path() -> Path | None:
 # Skills discovery — reuses discover_skills() from skills/loader.py
 # ---------------------------------------------------------------------------
 
-def discover_claude_skills() -> List[SkillDefinition]:
+
+def discover_claude_skills() -> list[SkillDefinition]:
     """Scan ``~/.claude/skills/`` for Claude Code skills."""
     skills_dir = get_claude_code_base() / "skills"
     log_debug(f"Scanning Claude Code skills: {skills_dir}")
     return discover_skills(str(skills_dir))
 
 
-def discover_codex_skills() -> List[SkillDefinition]:
+def discover_codex_skills() -> list[SkillDefinition]:
     """Scan ``~/.codex/skills/`` for Codex skills."""
     skills_dir = get_codex_base() / "skills"
     log_debug(f"Scanning Codex skills: {skills_dir}")
     return discover_skills(str(skills_dir))
 
 
-def discover_all_external_skills() -> Dict[str, List[SkillDefinition]]:
+def discover_all_external_skills() -> dict[str, list[SkillDefinition]]:
     """Discover skills from all external sources.
 
     Returns ``{"claude": [...], "codex": [...]}``.
     """
-    result: Dict[str, List[SkillDefinition]] = {}
+    result: dict[str, list[SkillDefinition]] = {}
     result["claude"] = discover_claude_skills()
     log_info(f"External skills: {len(result['claude'])} from Claude Code")
     result["codex"] = discover_codex_skills()
@@ -108,7 +108,8 @@ def discover_all_external_skills() -> Dict[str, List[SkillDefinition]]:
 # MCP discovery
 # ---------------------------------------------------------------------------
 
-def _load_mcp_json(path: Path) -> List[MCPServerConfig]:
+
+def _load_mcp_json(path: Path) -> list[MCPServerConfig]:
     """Load MCP server configs from a JSON file (``mcpServers`` key).
 
     Returns an empty list if the file doesn't exist or is malformed.
@@ -118,14 +119,14 @@ def _load_mcp_json(path: Path) -> List[MCPServerConfig]:
         return []
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         log_debug(f"Failed to load external MCP config {path}: {e}")
         return []
 
     servers_dict = data.get("mcpServers", {})
-    servers: List[MCPServerConfig] = []
+    servers: list[MCPServerConfig] = []
 
     for name, cfg in servers_dict.items():
         if not isinstance(cfg, dict):
@@ -147,7 +148,7 @@ def _load_mcp_json(path: Path) -> List[MCPServerConfig]:
     return servers
 
 
-def _load_codex_mcp_toml(path: Path) -> List[MCPServerConfig]:
+def _load_codex_mcp_toml(path: Path) -> list[MCPServerConfig]:
     """Load MCP server configs from Codex ``config.toml``.
 
     Codex stores MCP servers under the ``[mcp_servers]`` TOML table::
@@ -177,7 +178,7 @@ def _load_codex_mcp_toml(path: Path) -> List[MCPServerConfig]:
         return []
 
     mcp_servers = data.get("mcp_servers", {})
-    servers: List[MCPServerConfig] = []
+    servers: list[MCPServerConfig] = []
 
     for name, cfg in mcp_servers.items():
         if not isinstance(cfg, dict):
@@ -186,7 +187,9 @@ def _load_codex_mcp_toml(path: Path) -> List[MCPServerConfig]:
         if not command:
             continue
         # Codex uses startup_timeout_sec; map to our timeout field
-        timeout = float(cfg.get("startup_timeout_sec", cfg.get("timeout", 30.0)))
+        timeout = float(
+            cfg.get("startup_timeout_sec", cfg.get("timeout", 30.0)) or 30.0
+        )
         server = MCPServerConfig(
             name=name,
             command=command,
@@ -201,7 +204,7 @@ def _load_codex_mcp_toml(path: Path) -> List[MCPServerConfig]:
     return servers
 
 
-def load_claude_mcp() -> List[MCPServerConfig]:
+def load_claude_mcp() -> list[MCPServerConfig]:
     """Load MCP configs from Claude Code.
 
     Checks (in order, merging & de-duplicating by name, earlier wins):
@@ -213,13 +216,13 @@ def load_claude_mcp() -> List[MCPServerConfig]:
     """
     base = get_claude_code_base()
     seen_names: set = set()
-    servers: List[MCPServerConfig] = []
+    servers: list[MCPServerConfig] = []
 
     # Build candidate list in priority order
-    candidates: List[Path] = [
-        base / ".mcp.json",                # per-project
-        base / "mcp.json",                 # older location
-        Path.home() / ".claude.json",      # global user config
+    candidates: list[Path] = [
+        base / ".mcp.json",  # per-project
+        base / "mcp.json",  # older location
+        Path.home() / ".claude.json",  # global user config
     ]
     managed = _get_claude_managed_mcp_path()
     if managed is not None:
@@ -239,19 +242,19 @@ def load_claude_mcp() -> List[MCPServerConfig]:
     return servers
 
 
-def load_codex_mcp() -> List[MCPServerConfig]:
+def load_codex_mcp() -> list[MCPServerConfig]:
     """Load MCP configs from Codex CLI (``~/.codex/config.toml``)."""
     path = get_codex_base() / "config.toml"
     log_debug(f"Scanning Codex MCP config: {path}")
     return _load_codex_mcp_toml(path)
 
 
-def discover_all_external_mcp() -> Dict[str, List[MCPServerConfig]]:
+def discover_all_external_mcp() -> dict[str, list[MCPServerConfig]]:
     """Discover MCP server configs from all external sources.
 
     Returns ``{"claude": [...], "codex": [...]}``.
     """
-    result: Dict[str, List[MCPServerConfig]] = {}
+    result: dict[str, list[MCPServerConfig]] = {}
     result["claude"] = load_claude_mcp()
     log_info(f"External MCP: {len(result['claude'])} servers from Claude Code")
     result["codex"] = load_codex_mcp()

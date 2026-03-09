@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Optional, Set, Tuple
+from typing import Annotated, Any
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import (
-    get_function_at,
-    get_function_name,
-    parse_addr_like,
-    require_bv,
-)
-
+from .compat import parse_addr_like, require_bv
+from .fn_utils import get_function_at, get_function_name
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_il(func: Any, level: str = "mlil") -> Any:
     """Get IL at the requested level."""
@@ -36,7 +32,7 @@ def _edge_type_name(edge: Any) -> str:
     return str(name) if name else str(etype)
 
 
-def _is_const_expr(expr: Any) -> Tuple[bool, Optional[int]]:
+def _is_const_expr(expr: Any) -> tuple[bool, int | None]:
     """Check if an IL expression is a constant. Returns (is_const, value)."""
     if expr is None:
         return False, None
@@ -62,6 +58,7 @@ def _get_var_name(var: Any) -> str:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
 
 @tool(category="il", requires_decompiler=True)
 def get_cfg(
@@ -89,8 +86,8 @@ def get_cfg(
         "",
     ]
 
-    back_edges: List[Tuple[int, int]] = []
-    loop_headers: Set[int] = set()
+    back_edges: list[tuple[int, int]] = []
+    loop_headers: set[int] = set()
 
     for i, block in enumerate(blocks):
         start = int(getattr(block, "start", 0))
@@ -130,9 +127,13 @@ def get_cfg(
         # Dominators
         dominators = getattr(block, "dominators", None)
         if dominators:
-            dom_addrs = sorted(int(getattr(d, "start", 0)) for d in dominators if d is not block)
+            dom_addrs = sorted(
+                int(getattr(d, "start", 0)) for d in dominators if d is not block
+            )
             if dom_addrs:
-                lines.append(f"  dominators: {', '.join(f'0x{a:x}' for a in dom_addrs)}")
+                lines.append(
+                    f"  dominators: {', '.join(f'0x{a:x}' for a in dom_addrs)}"
+                )
 
         idom = getattr(block, "immediate_dominator", None)
         if idom is not None and idom is not block:
@@ -148,7 +149,9 @@ def get_cfg(
         for src, tgt in back_edges:
             lines.append(f"  0x{src:x} -> 0x{tgt:x}")
     if loop_headers:
-        lines.append(f"Loop headers: {', '.join(f'0x{h:x}' for h in sorted(loop_headers))}")
+        lines.append(
+            f"Loop headers: {', '.join(f'0x{h:x}' for h in sorted(loop_headers))}"
+        )
     if not back_edges and not loop_headers:
         lines.append("No loops detected")
 
@@ -190,7 +193,7 @@ def track_variable_ssa(
         msg += f"Available variables: {', '.join(var_names[:30])}"
         # Fall back to instruction scan — the variable may appear only
         # as a memory reference (e.g. -O0 stack slots)
-        scan_lines: List[str] = []
+        scan_lines: list[str] = []
         _scan_variable_uses(il, variable_name, scan_lines)
         if scan_lines:
             msg += f"\n\nInstruction scan for '{variable_name}':\n"
@@ -255,7 +258,7 @@ def track_variable_ssa(
     return "\n".join(lines)
 
 
-def _scan_variable_uses(il: Any, var_name: str, lines: List[str]) -> None:
+def _scan_variable_uses(il: Any, var_name: str, lines: list[str]) -> None:
     """Scan all instructions for references to a variable name."""
     instructions = list(getattr(il, "instructions", []) or [])
     for inst in instructions:

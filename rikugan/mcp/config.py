@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List
 
-from ..core.config import RikuganConfig
-from ..core.errors import MCPError
+from ..constants import CONFIG_DIR_NAME, MCP_CONFIG_FILE
+from ..core.host import get_user_config_base_dir
 from ..core.logging import log_debug, log_error
+
+
+def _default_mcp_config_path() -> str:
+    """Compute the default MCP config path without instantiating RikuganConfig."""
+    return os.path.join(get_user_config_base_dir(), CONFIG_DIR_NAME, MCP_CONFIG_FILE)
 
 
 @dataclass
@@ -18,36 +22,36 @@ class MCPServerConfig:
 
     name: str
     command: str
-    args: List[str] = field(default_factory=list)
-    env: Dict[str, str] = field(default_factory=dict)
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     timeout: float = 30.0
 
 
-def load_mcp_config(path: str = "") -> List[MCPServerConfig]:
+def load_mcp_config(path: str = "") -> list[MCPServerConfig]:
     """Load MCP server configurations from the Rikugan config directory.
 
-    When *path* is not given, uses ``RikuganConfig().mcp_config_path``
-    (``~/.idapro/rikugan/mcp.json``).
+    When *path* is not given, computes the default from the host config
+    base directory (e.g. ``~/.idapro/rikugan/mcp.json``).
 
     Returns an empty list if the file doesn't exist (graceful no-op).
     """
     if not path:
-        path = RikuganConfig().mcp_config_path
+        path = _default_mcp_config_path()
 
     if not os.path.isfile(path):
         log_debug(f"MCP config not found: {path}")
         return []
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         log_error(f"Failed to load MCP config: {e}")
         return []
 
     servers_dict = data.get("mcpServers", {})
-    servers: List[MCPServerConfig] = []
+    servers: list[MCPServerConfig] = []
 
     for name, cfg in servers_dict.items():
         if not isinstance(cfg, dict):
@@ -69,19 +73,22 @@ def load_mcp_config(path: str = "") -> List[MCPServerConfig]:
     return servers
 
 
-def save_mcp_config(servers: List[MCPServerConfig], path: str = "") -> None:
+def save_mcp_config(servers: list[MCPServerConfig], path: str = "") -> None:
     """Save MCP server configurations back to disk."""
     if not path:
-        path = RikuganConfig().mcp_config_path
+        path = _default_mcp_config_path()
 
-    servers_dict: Dict[str, dict] = {}
+    servers_dict: dict[str, dict] = {}
     for s in servers:
-        servers_dict[s.name] = {
+        entry: dict = {
             "command": s.command,
             "args": s.args,
             "env": s.env,
             "enabled": s.enabled,
         }
+        if s.timeout != 30.0:
+            entry["timeout"] = s.timeout
+        servers_dict[s.name] = entry
 
     data = {"mcpServers": servers_dict}
 

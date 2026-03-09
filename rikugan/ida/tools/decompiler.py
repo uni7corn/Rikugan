@@ -5,9 +5,10 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
-from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
-from ..core.errors import ToolError
-from .base import parse_addr, tool
+from ...core.errors import ToolError
+from ...core.host import HAS_HEXRAYS as _HAS_HEXRAYS
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 
 ida_hexrays = ida_lines = ida_funcs = ida_idaapi = None
 try:
@@ -16,7 +17,7 @@ try:
     ida_funcs = importlib.import_module("ida_funcs")
     ida_idaapi = importlib.import_module("ida_idaapi")
 except ImportError:
-    pass  # Hex-Rays not present — _HAS_HEXRAYS guard handles graceful degradation
+    log_debug("Hex-Rays modules not available — decompiler tools will be disabled")
 
 _BADADDR = 0xFFFFFFFF  # fallback if ida_idaapi not loaded
 
@@ -63,7 +64,9 @@ def get_pseudocode(
 
 
 @tool(category="decompiler", requires_decompiler=True)
-def get_decompiler_variables(address: Annotated[str, "Function address (hex string)"]) -> str:
+def get_decompiler_variables(
+    address: Annotated[str, "Function address (hex string)"],
+) -> str:
     """List local variables from the decompiler output."""
     result = _decompile(parse_addr(address))
     if isinstance(result, str):
@@ -103,8 +106,10 @@ def _resolve_ctree_ea(cfunc, target_ea: int):
             # No statement — use the first item's ea
             if items:
                 return items[0].ea, itp
-    except Exception:
-        pass  # eamap not available or lookup failed
+    except Exception as exc:
+        log_debug(
+            f"eamap lookup failed for {target_ea:#x}, falling back to ctree walk: {exc}"
+        )
 
     # --- Strategy 2: nearest statement by ctree walk ---
     stmt_eas = []
@@ -141,7 +146,9 @@ def _resolve_ctree_ea(cfunc, target_ea: int):
 @tool(category="decompiler", requires_decompiler=True, mutating=True)
 def set_pseudocode_comment(
     func_address: Annotated[str, "Function address (hex string)"],
-    target_address: Annotated[str, "Address of the pseudocode line to comment (hex string)"],
+    target_address: Annotated[
+        str, "Address of the pseudocode line to comment (hex string)"
+    ],
     comment: Annotated[str, "Comment text to insert above the line"],
 ) -> str:
     """Insert a comment into the Hex-Rays pseudocode view at a specific line.
@@ -163,7 +170,7 @@ def set_pseudocode_comment(
     if func and not (func.start_ea <= target_ea < func.end_ea):
         return (
             f"Address 0x{target_ea:x} is outside function "
-            f"0x{func.start_ea:x}–0x{func.end_ea:x}"
+            f"0x{func.start_ea:x}\u20130x{func.end_ea:x}"
         )
 
     # Resolve to a valid ctree location; fall back to raw ea + ITP_SEMI
@@ -178,8 +185,7 @@ def set_pseudocode_comment(
     cfunc.save_user_cmts()
 
     return (
-        f"Set pseudocode comment at 0x{item_ea:x} in function 0x{func_ea:x}:\n"
-        f"{comment}"
+        f"Set pseudocode comment at 0x{item_ea:x} in function 0x{func_ea:x}:\n{comment}"
     )
 
 

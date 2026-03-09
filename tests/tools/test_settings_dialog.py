@@ -2,63 +2,13 @@
 
 from __future__ import annotations
 
-import queue
 import sys
 import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-
-# ---------------------------------------------------------------------------
-# Qt stubs
-# ---------------------------------------------------------------------------
-
-def _qt_class(name: str) -> type:
-    return type(name, (), {"__init__": lambda self, *a, **k: None})
-
-
-class _Signal:
-    def __init__(self, *a): pass
-    def connect(self, *a): pass
-    def emit(self, *a): pass
-    def __get__(self, obj, objtype=None): return self
-
-
-_widget_names = [
-    "QApplication", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel",
-    "QPushButton", "QPlainTextEdit", "QScrollArea", "QFrame", "QSplitter",
-    "QDialog", "QDialogButtonBox", "QComboBox", "QLineEdit", "QSpinBox",
-    "QDoubleSpinBox", "QCheckBox", "QGroupBox", "QFormLayout",
-    "QToolButton", "QSizePolicy", "QTabWidget", "QTabBar",
-    "QFileDialog", "QMenu", "QMessageBox",
-]
-
-_core_mod = types.ModuleType("PySide6.QtCore")
-_core_mod.Signal = _Signal
-_core_mod.Qt = MagicMock()
-_core_mod.QObject = _qt_class("QObject")
-_core_mod.QTimer = _qt_class("QTimer")
-
-_widget_mod = types.ModuleType("PySide6.QtWidgets")
-for _n in _widget_names:
-    setattr(_widget_mod, _n, _qt_class(_n))
-
-_gui_mod = types.ModuleType("PySide6.QtGui")
-for _n in ["QSyntaxHighlighter", "QTextCharFormat", "QColor", "QFont"]:
-    setattr(_gui_mod, _n, _qt_class(_n))
-
-sys.modules.setdefault("PySide6", types.ModuleType("PySide6"))
-sys.modules.setdefault("PySide6.QtCore", _core_mod)
-sys.modules.setdefault("PySide6.QtWidgets", _widget_mod)
-sys.modules.setdefault("PySide6.QtGui", _gui_mod)
-
-_qt_compat_mod = types.ModuleType("rikugan.ui.qt_compat")
-for _n in _widget_names + ["QScrollArea", "QFrame", "QSplitter"]:
-    setattr(_qt_compat_mod, _n, _qt_class(_n))
-_qt_compat_mod.Signal = _Signal
-_qt_compat_mod.Qt = MagicMock()
-_qt_compat_mod.QTimer = _qt_class("QTimer")
-sys.modules.setdefault("rikugan.ui.qt_compat", _qt_compat_mod)
+from tests.qt_stubs import ensure_pyside6_stubs
+ensure_pyside6_stubs()
 
 # Stub heavy dependencies
 for _mod_name in [
@@ -66,6 +16,7 @@ for _mod_name in [
     "rikugan.core.logging",
     "rikugan.core.types",
     "rikugan.providers.anthropic_provider",
+    "rikugan.providers.auth_cache",
     "rikugan.providers.ollama_provider",
     "rikugan.providers.registry",
 ]:
@@ -73,7 +24,8 @@ for _mod_name in [
         _stub = types.ModuleType(_mod_name)
         for _attr in [
             "RikuganConfig", "log_debug", "log_error", "ModelInfo",
-            "resolve_anthropic_auth", "DEFAULT_OLLAMA_URL", "ProviderRegistry",
+            "resolve_anthropic_auth", "resolve_auth_cached",
+            "DEFAULT_OLLAMA_URL", "ProviderRegistry",
         ]:
             setattr(_stub, _attr, MagicMock())
         sys.modules[_mod_name] = _stub
@@ -83,7 +35,25 @@ _ollama_mod = sys.modules.get("rikugan.providers.ollama_provider")
 if _ollama_mod is not None and not isinstance(getattr(_ollama_mod, "DEFAULT_OLLAMA_URL", None), str):
     _ollama_mod.DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
-from rikugan.ui.settings_dialog import _ModelFetcher, _AddProviderDialog, _resolve_auth_cached  # noqa: E402
+# Install real resolve_auth_cached logic on the stub so tests can exercise it
+_ac_stub = sys.modules["rikugan.providers.auth_cache"]
+_ac_stub._cached_oauth = None
+_ac_stub.resolve_anthropic_auth = MagicMock(return_value=("tok", "api_key"))
+
+
+def _resolve_auth_cached_impl(explicit_key=""):
+    if explicit_key:
+        return _ac_stub.resolve_anthropic_auth(explicit_key)
+    if _ac_stub._cached_oauth is not None:
+        return _ac_stub._cached_oauth
+    _ac_stub._cached_oauth = _ac_stub.resolve_anthropic_auth("")
+    return _ac_stub._cached_oauth
+
+
+_ac_stub.resolve_auth_cached = _resolve_auth_cached_impl
+_ac_stub.invalidate_cache = MagicMock()
+
+from rikugan.ui.settings_dialog import _ModelFetcher, _AddProviderDialog  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -162,32 +132,36 @@ class TestModelFetcherFetch(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestResolveAuthCached(unittest.TestCase):
+    """Tests for the auth_cache module (extracted from settings_dialog)."""
+
+    def _get_ac(self):
+        return sys.modules["rikugan.providers.auth_cache"]
+
     def setUp(self):
-        # Clear the module-level cache before each test
-        import rikugan.ui.settings_dialog as sd
-        sd._cached_oauth = None
+        ac = self._get_ac()
+        ac._cached_oauth = None
 
     def test_explicit_key_bypasses_cache(self):
-        import rikugan.ui.settings_dialog as sd
+        ac = self._get_ac()
         mock_auth = MagicMock(return_value=("token", "api_key"))
-        with patch.object(sd, "resolve_anthropic_auth", mock_auth):
-            result = sd._resolve_auth_cached("my-key")
+        with patch.object(ac, "resolve_anthropic_auth", mock_auth):
+            result = ac.resolve_auth_cached("my-key")
         mock_auth.assert_called_once_with("my-key")
 
     def test_no_key_uses_cache_on_second_call(self):
-        import rikugan.ui.settings_dialog as sd
+        ac = self._get_ac()
         mock_auth = MagicMock(return_value=("tok", "oauth"))
-        with patch.object(sd, "resolve_anthropic_auth", mock_auth):
-            sd._resolve_auth_cached("")
-            sd._resolve_auth_cached("")
+        with patch.object(ac, "resolve_anthropic_auth", mock_auth):
+            ac.resolve_auth_cached("")
+            ac.resolve_auth_cached("")
         mock_auth.assert_called_once()  # second call hits cache
 
     def test_cache_is_populated_after_first_call(self):
-        import rikugan.ui.settings_dialog as sd
+        ac = self._get_ac()
         mock_auth = MagicMock(return_value=("t", "o"))
-        with patch.object(sd, "resolve_anthropic_auth", mock_auth):
-            sd._resolve_auth_cached("")
-        self.assertIsNotNone(sd._cached_oauth)
+        with patch.object(ac, "resolve_anthropic_auth", mock_auth):
+            ac.resolve_auth_cached("")
+        self.assertIsNotNone(ac._cached_oauth)
 
 
 # ---------------------------------------------------------------------------

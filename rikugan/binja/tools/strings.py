@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Iterable, Tuple
+from collections.abc import Iterable
+from typing import Annotated
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import parse_addr_like, require_bv
+from .compat import parse_addr_like, require_bv
 
 
-def _iter_strings(bv) -> Iterable[Tuple[int, int, str]]:
+def _iter_strings(bv) -> Iterable[tuple[int, int, str]]:
     strings = getattr(bv, "strings", None)
     if strings is None:
         get_strings = getattr(bv, "get_strings", None)
@@ -41,7 +42,7 @@ def list_strings(
     bv = require_bv()
     strings = list(_iter_strings(bv))
     total = len(strings)
-    page = strings[offset:offset + limit]
+    page = strings[offset : offset + limit]
     lines = [f"Strings {offset}\u2013{offset + len(page)} of {total}:"]
     for ea, length, text in page:
         lines.append(f"  0x{ea:x}  [{length}] {text}")

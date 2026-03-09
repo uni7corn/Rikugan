@@ -49,10 +49,15 @@ def md_to_html(text: str) -> str:
 
     # Phase 1: extract fenced code blocks to protect them from inline processing
     blocks: list[str] = []
+
     def _stash_block(m: re.Match) -> str:
         lang = m.group(1) or ""
         code = html.escape(m.group(2).strip("\n"))
-        lang_tag = f'<span style="color:#808080;font-size:10px;">{html.escape(lang)}</span><br>' if lang else ""
+        lang_tag = (
+            f'<span style="color:#808080;font-size:10px;">{html.escape(lang)}</span><br>'
+            if lang
+            else ""
+        )
         block_html = f'<div style="{_BLOCK_CODE_STYLE}">{lang_tag}{code}</div>'
         blocks.append(block_html)
         return f"\x00BLOCK{len(blocks) - 1}\x00"
@@ -101,7 +106,9 @@ def md_to_html(text: str) -> str:
                 item_text = re.sub(r"^\s*[-*]\s+", "", lines[i])
                 items.append(f"<li>{_inline(item_text)}</li>")
                 i += 1
-            out_lines.append("<ul style='margin:2px 0 2px 16px;'>" + "".join(items) + "</ul>")
+            out_lines.append(
+                "<ul style='margin:2px 0 2px 16px;'>" + "".join(items) + "</ul>"
+            )
             continue
 
         # Numbered list — collect consecutive items
@@ -111,7 +118,9 @@ def md_to_html(text: str) -> str:
                 item_text = re.sub(r"^\s*\d+[.)]\s+", "", lines[i])
                 items.append(f"<li>{_inline(item_text)}</li>")
                 i += 1
-            out_lines.append("<ol style='margin:2px 0 2px 16px;'>" + "".join(items) + "</ol>")
+            out_lines.append(
+                "<ol style='margin:2px 0 2px 16px;'>" + "".join(items) + "</ol>"
+            )
             continue
 
         # Empty line → paragraph break
@@ -142,10 +151,9 @@ def _inline(text: str) -> str:
 
     # Stash inline code spans so bold/italic don't mangle their contents
     code_spans: list[str] = []
+
     def _stash_code(m: re.Match) -> str:
-        code_spans.append(
-            f'<span style="{_INLINE_CODE_STYLE}">{m.group(1)}</span>'
-        )
+        code_spans.append(f'<span style="{_INLINE_CODE_STYLE}">{m.group(1)}</span>')
         return f"\x01CODE{len(code_spans) - 1}\x01"
 
     text = re.sub(r"`([^`]+)`", _stash_code, text)

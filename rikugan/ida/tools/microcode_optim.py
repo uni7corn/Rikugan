@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import importlib
 import textwrap
-from typing import Any, Callable, Dict
+from collections.abc import Callable
+from typing import Any
 
-from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
-from ..core.logging import log_debug
+from ...core.host import HAS_HEXRAYS as _HAS_HEXRAYS
+from ...core.logging import log_debug
+from ...tools.script_guard import safe_builtins
 
 ida_hexrays = None
 try:
@@ -23,12 +25,13 @@ except ImportError as e:
 # ---------------------------------------------------------------------------
 # Global optimizer registry — keeps references alive so IDA doesn't GC them
 # ---------------------------------------------------------------------------
-installed_optimizers: Dict[str, object] = {}
+installed_optimizers: dict[str, object] = {}
 
 
 # ---------------------------------------------------------------------------
 # Optimizer classes
 # ---------------------------------------------------------------------------
+
 
 class NopOptimizer(ida_hexrays.optinsn_t if _HAS_HEXRAYS else object):
     """Instruction optimizer that NOPs instructions at specified addresses."""
@@ -63,7 +66,7 @@ class DynamicInsnOptimizer(ida_hexrays.optinsn_t if _HAS_HEXRAYS else object):
         try:
             result = self._optimize(blk, ins)
             return int(result) if result else 0
-        except Exception as e:  # noqa: BLE001 — user-provided code can raise anything
+        except Exception as e:
             log_debug(f"DynamicInsnOptimizer '{self.name}' raised: {e}")
             return 0
 
@@ -82,7 +85,7 @@ class DynamicBlockOptimizer(ida_hexrays.optblock_t if _HAS_HEXRAYS else object):
         try:
             result = self._optimize(blk)
             return int(result) if result else 0
-        except Exception as e:  # noqa: BLE001 — user-provided code can raise anything
+        except Exception as e:
             log_debug(f"DynamicBlockOptimizer '{self.name}' raised: {e}")
             return 0
 
@@ -90,6 +93,7 @@ class DynamicBlockOptimizer(ida_hexrays.optblock_t if _HAS_HEXRAYS else object):
 # ---------------------------------------------------------------------------
 # Lifecycle helpers
 # ---------------------------------------------------------------------------
+
 
 def remove_optimizer(name: str) -> None:
     """Remove an optimizer from the registry and uninstall it."""
@@ -101,12 +105,12 @@ def remove_optimizer(name: str) -> None:
             log_debug(f"remove_optimizer '{name}': {e}")  # may already be removed
 
 
-def build_optimizer_namespace() -> Dict[str, Any]:
+def build_optimizer_namespace() -> dict[str, Any]:
     """Build the execution namespace for user-provided optimizer code.
 
     Includes ida_hexrays and all its opcode/operand/maturity constants.
     """
-    namespace = {"__builtins__": __builtins__}
+    namespace = {"__builtins__": safe_builtins()}
     namespace["ida_hexrays"] = ida_hexrays
     for attr in dir(ida_hexrays):
         if (

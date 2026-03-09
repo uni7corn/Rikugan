@@ -4,24 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any, Dict, Iterable, List, Optional, Tuple
+from typing import Annotated, Any
 
 from ...core.errors import ToolError
 from ...core.logging import log_debug
 from ...tools.base import tool
-from .common import (
-    define_user_type,
-    get_bn_module,
-    get_function_at,
-    parse_addr_like,
-    parse_type_string,
-    require_bv,
-    update_analysis_and_wait,
-)
+from .compat import get_bn_module, parse_addr_like, require_bv, update_analysis_and_wait
+from .fn_utils import get_function_at
+from .type_utils import define_user_type, parse_type_string
 
 
-def _named_types_map(bv: Any) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
+def _named_types_map(bv: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     types_obj = getattr(bv, "types", None)
     if isinstance(types_obj, dict):
         for qname, t in types_obj.items():
@@ -104,7 +98,7 @@ def _sizeof_type(bv: Any, type_str: str, default: int = 4) -> int:
     return default
 
 
-def _extract_types_dict(res: Any) -> Optional[Dict[str, Any]]:
+def _extract_types_dict(res: Any) -> dict[str, Any] | None:
     """Extract a ``{name: type}`` dict from whatever ``parse_types_from_*`` returns.
 
     Returns ``None`` when the format is not recognised so the caller can try
@@ -127,7 +121,7 @@ def _extract_types_dict(res: Any) -> Optional[Dict[str, Any]]:
     if isinstance(types_attr, dict):
         return {str(k): v for k, v in types_attr.items()}
 
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     for item in types_attr:
         if isinstance(item, tuple) and len(item) == 2:
             result[str(item[0])] = item[1]
@@ -139,7 +133,7 @@ def _extract_types_dict(res: Any) -> Optional[Dict[str, Any]]:
     return result
 
 
-def _parse_types_from_source(bv: Any, source: str) -> Dict[str, Any]:
+def _parse_types_from_source(bv: Any, source: str) -> dict[str, Any]:
     """Parse C declarations into a {name: type} map.
 
     ``parse_types_from_string`` takes a C string and is tried first.
@@ -165,14 +159,16 @@ def _parse_types_from_source(bv: Any, source: str) -> Dict[str, Any]:
         parsed = _extract_types_dict(res)
         if parsed is not None:
             return parsed
-        log_debug(f"_parse_types_from_source {meth_name} returned unrecognised format: {type(res)}")
+        log_debug(
+            f"_parse_types_from_source {meth_name} returned unrecognised format: {type(res)}"
+        )
 
     raise ToolError("Binary Ninja failed to parse C declarations")
 
 
-def _define_types_from_source(bv: Any, source: str) -> Dict[str, Any]:
+def _define_types_from_source(bv: Any, source: str) -> dict[str, Any]:
     parsed = _parse_types_from_source(bv, source)
-    defined: Dict[str, Any] = {}
+    defined: dict[str, Any] = {}
     for name, t in parsed.items():
         if define_user_type(bv, name, t):
             defined[name] = t
@@ -181,10 +177,10 @@ def _define_types_from_source(bv: Any, source: str) -> Dict[str, Any]:
     return defined
 
 
-def _extract_struct_members(t: Any) -> List[Dict[str, Any]]:
+def _extract_struct_members(t: Any) -> list[dict[str, Any]]:
     st = getattr(t, "structure", None) or t
     members = list(getattr(st, "members", []) or [])
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for m in members:
         off = int(getattr(m, "offset", 0))
         mname = str(getattr(m, "name", f"field_{off:x}"))
@@ -194,21 +190,23 @@ def _extract_struct_members(t: Any) -> List[Dict[str, Any]]:
             msize = getattr(mt, "width", None) or getattr(mt, "size", None)
         if not isinstance(msize, int) or msize <= 0:
             msize = 4
-        rows.append({
-            "name": mname,
-            "type": _type_to_str(mt),
-            "offset": off,
-            "size": int(msize),
-            "comment": "",
-        })
+        rows.append(
+            {
+                "name": mname,
+                "type": _type_to_str(mt),
+                "offset": off,
+                "size": int(msize),
+                "comment": "",
+            }
+        )
     rows.sort(key=lambda x: int(x["offset"]))
     return rows
 
 
-def _extract_enum_members(t: Any) -> List[Tuple[str, int]]:
+def _extract_enum_members(t: Any) -> list[tuple[str, int]]:
     enum_obj = getattr(t, "enumeration", None) or t
     members = list(getattr(enum_obj, "members", []) or [])
-    out: List[Tuple[str, int]] = []
+    out: list[tuple[str, int]] = []
     for m in members:
         name = str(getattr(m, "name", ""))
         value = getattr(m, "value", None)
@@ -217,10 +215,16 @@ def _extract_enum_members(t: Any) -> List[Tuple[str, int]]:
     return out
 
 
-def _build_struct_decl(name: str, fields: List[Dict[str, Any]]) -> str:
+def _build_struct_decl(name: str, fields: list[dict[str, Any]]) -> str:
     # Keep explicit offsets when present by inserting synthetic padding.
-    explicit = all(isinstance(f.get("offset"), int) and int(f["offset"]) >= 0 for f in fields)
-    ordered = sorted(fields, key=lambda x: int(x.get("offset", 0))) if explicit else list(fields)
+    explicit = all(
+        isinstance(f.get("offset"), int) and int(f["offset"]) >= 0 for f in fields
+    )
+    ordered = (
+        sorted(fields, key=lambda x: int(x.get("offset", 0)))
+        if explicit
+        else list(fields)
+    )
     lines = [f"struct {name} {{"]
     cur = 0
     for f in ordered:
@@ -253,7 +257,9 @@ def _parse_field_type(bv: Any, ftype_str: str) -> Any:
     return None
 
 
-def _redefine_struct_with_builder(bv: Any, name: str, fields: List[Dict[str, Any]]) -> bool:
+def _redefine_struct_with_builder(
+    bv: Any, name: str, fields: list[dict[str, Any]]
+) -> bool:
     """Build a struct using BN's StructureBuilder API (reliable, version-agnostic)."""
     bn = get_bn_module()
     if bn is None:
@@ -270,8 +276,10 @@ def _redefine_struct_with_builder(bv: Any, name: str, fields: List[Dict[str, Any
             off = f.get("offset")
             ftype = _parse_field_type(bv, ftype_str)
             if ftype is None:
-                log_debug(f"_redefine_struct_with_builder: skipping field {fname!r}, "
-                          f"could not parse type {ftype_str!r}")
+                log_debug(
+                    f"_redefine_struct_with_builder: skipping field {fname!r}, "
+                    f"could not parse type {ftype_str!r}"
+                )
                 continue
             if isinstance(off, int) and off >= 0:
                 insert = getattr(sb, "insert", None)
@@ -302,14 +310,16 @@ def _redefine_struct_with_builder(bv: Any, name: str, fields: List[Dict[str, Any
         return False
 
 
-def _redefine_struct(bv: Any, name: str, fields: List[Dict[str, Any]]) -> bool:
+def _redefine_struct(bv: Any, name: str, fields: list[dict[str, Any]]) -> bool:
     # Primary: use StructureBuilder directly — reliably adds fields across BN versions.
     if _redefine_struct_with_builder(bv, name, fields):
         # Verify fields were registered; fall through to C-parse path if empty.
         t = _get_type_by_name(bv, name)
         if t is not None and _extract_struct_members(t):
             return True
-        log_debug("_redefine_struct_with_builder produced empty struct, trying C-parse path")
+        log_debug(
+            "_redefine_struct_with_builder produced empty struct, trying C-parse path"
+        )
 
     # Fallback: parse C declaration and register via define_user_type.
     decl = _build_struct_decl(name, fields)
@@ -323,7 +333,9 @@ def _redefine_struct(bv: Any, name: str, fields: List[Dict[str, Any]]) -> bool:
 @tool(category="types", mutating=True)
 def create_struct(
     name: Annotated[str, "Struct name"],
-    fields: Annotated[str, "JSON array of fields: [{name, type, offset?, comment?}, ...]"],
+    fields: Annotated[
+        str, "JSON array of fields: [{name, type, offset?, comment?}, ...]"
+    ],
 ) -> str:
     """Create a new struct with typed fields."""
     bv = require_bv()
@@ -337,7 +349,7 @@ def create_struct(
     except Exception as e:
         return f"Invalid fields JSON: {e}"
 
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     cur = 0
     for fld in field_list:
         if not isinstance(fld, dict) or "name" not in fld:
@@ -347,13 +359,15 @@ def create_struct(
         off = fld.get("offset", cur)
         if not isinstance(off, int):
             off = cur
-        normalized.append({
-            "name": str(fld["name"]),
-            "type": ftype,
-            "offset": int(off),
-            "size": int(size),
-            "comment": str(fld.get("comment", "")),
-        })
+        normalized.append(
+            {
+                "name": str(fld["name"]),
+                "type": ftype,
+                "offset": int(off),
+                "size": int(size),
+                "comment": str(fld.get("comment", "")),
+            }
+        )
         cur = max(cur, int(off) + int(size))
 
     if not normalized:
@@ -369,7 +383,10 @@ def create_struct(
 @tool(category="types", mutating=True)
 def modify_struct(
     name: Annotated[str, "Struct name"],
-    action: Annotated[str, "Action: add_field, remove_field, rename_field, retype_field, set_field_comment, resize"],
+    action: Annotated[
+        str,
+        "Action: add_field, remove_field, rename_field, retype_field, set_field_comment, resize",
+    ],
     field_name: Annotated[str, "Field name to modify"] = "",
     new_name: Annotated[str, "New name (for rename_field)"] = "",
     field_type: Annotated[str, "Type string (for add_field/retype_field)"] = "int",
@@ -395,15 +412,21 @@ def modify_struct(
             off = int(last["offset"]) + int(last["size"])
         else:
             off = 0
-        members.append({
-            "name": field_name,
-            "type": field_type,
-            "offset": off,
-            "size": size,
-            "comment": comment,
-        })
+        members.append(
+            {
+                "name": field_name,
+                "type": field_type,
+                "offset": off,
+                "size": size,
+                "comment": comment,
+            }
+        )
         ok = _redefine_struct(bv, name, members)
-        return f"Added field '{field_name}' ({field_type}) to '{name}'" if ok else "Failed to add field"
+        return (
+            f"Added field '{field_name}' ({field_type}) to '{name}'"
+            if ok
+            else "Failed to add field"
+        )
 
     if action == "remove_field":
         new_members = [m for m in members if m["name"] != field_name]
@@ -454,15 +477,19 @@ def modify_struct(
             return f"Cannot shrink struct (current={current}, requested={new_size})"
         if new_size == current:
             return f"Struct '{name}' already size {current}"
-        members.append({
-            "name": f"_pad_end_{current:x}",
-            "type": f"char[{new_size - current}]",
-            "offset": current,
-            "size": new_size - current,
-            "comment": "",
-        })
+        members.append(
+            {
+                "name": f"_pad_end_{current:x}",
+                "type": f"char[{new_size - current}]",
+                "offset": current,
+                "size": new_size - current,
+                "comment": "",
+            }
+        )
         ok = _redefine_struct(bv, name, members)
-        return f"Resized '{name}' from {current} to {new_size}" if ok else "Resize failed"
+        return (
+            f"Resized '{name}' from {current} to {new_size}" if ok else "Resize failed"
+        )
 
     return f"Unknown action: {action}"
 
@@ -479,11 +506,16 @@ def get_struct_info(name: Annotated[str, "Struct name"]) -> str:
     size = 0
     if members:
         size = max(int(m["offset"]) + int(m["size"]) for m in members)
-    lines = [f"Struct: {name}", f"Size: {size} (0x{size:x})", f"Members: {len(members)}", ""]
+    lines = [
+        f"Struct: {name}",
+        f"Size: {size} (0x{size:x})",
+        f"Members: {len(members)}",
+        "",
+    ]
     for m in members:
         lines.append(
-            f"  +0x{int(m['offset']):04x}  {str(m['type']):24s} "
-            f"{str(m['name']):24s} ({int(m['size'])} bytes)"
+            f"  +0x{int(m['offset']):04x}  {m['type']!s:24s} "
+            f"{m['name']!s:24s} ({int(m['size'])} bytes)"
         )
     return "\n".join(lines)
 
@@ -546,7 +578,11 @@ def create_enum(
         parsed = _define_types_from_source(bv, "\n".join(lines))
     except Exception as e:
         return f"Failed to create enum '{name}': {e}"
-    return f"Created enum '{name}' with {len(member_list)} members" if name in parsed else f"Failed to create enum '{name}'"
+    return (
+        f"Created enum '{name}' with {len(member_list)} members"
+        if name in parsed
+        else f"Failed to create enum '{name}'"
+    )
 
 
 @tool(category="types", mutating=True)
@@ -657,7 +693,11 @@ def create_typedef(
         parsed = _define_types_from_source(bv, decl)
     except Exception as e:
         return f"Failed to create typedef: {decl} ({e})"
-    return f"Created typedef: {decl}" if name in parsed else f"Failed to create typedef: {decl}"
+    return (
+        f"Created typedef: {decl}"
+        if name in parsed
+        else f"Failed to create typedef: {decl}"
+    )
 
 
 @tool(category="types", mutating=True)
@@ -679,7 +719,9 @@ def apply_struct_to_address(
                 meth(ea, t)
                 return f"Applied struct '{struct_name}' at 0x{ea:x}"
             except Exception as e:
-                log_debug(f"apply_struct_to_address {meth_name} failed at 0x{ea:x}: {e}")
+                log_debug(
+                    f"apply_struct_to_address {meth_name} failed at 0x{ea:x}: {e}"
+                )
     return f"Failed to apply struct at 0x{ea:x}"
 
 
@@ -714,7 +756,9 @@ def apply_type_to_variable(
             target = lv
             break
     if target is None:
-        return f"Variable '{var_name}' not found in 0x{int(getattr(func, 'start', ea)):x}"
+        return (
+            f"Variable '{var_name}' not found in 0x{int(getattr(func, 'start', ea)):x}"
+        )
 
     for meth_name in ("set_user_var_type", "setUserVarType"):
         meth = getattr(func, meth_name, None)
@@ -723,7 +767,9 @@ def apply_type_to_variable(
                 meth(target, tif)
                 return f"Set type of '{var_name}' to '{type_str}'"
             except Exception as e:
-                log_debug(f"apply_type_to_variable {meth_name} failed for {var_name!r}: {e}")
+                log_debug(
+                    f"apply_type_to_variable {meth_name} failed for {var_name!r}: {e}"
+                )
 
     for meth_name in ("create_user_var", "createUserVar"):
         meth = getattr(func, meth_name, None)
@@ -732,7 +778,9 @@ def apply_type_to_variable(
                 meth(target, tif, var_name)
                 return f"Set type of '{var_name}' to '{type_str}'"
             except Exception as e:
-                log_debug(f"apply_type_to_variable {meth_name} failed for {var_name!r}: {e}")
+                log_debug(
+                    f"apply_type_to_variable {meth_name} failed for {var_name!r}: {e}"
+                )
 
     return f"Failed to set type on '{var_name}'"
 
@@ -740,7 +788,9 @@ def apply_type_to_variable(
 @tool(category="types", mutating=True)
 def set_function_prototype(
     address: Annotated[str, "Function address (hex string)"],
-    prototype: Annotated[str, "Full C prototype (e.g. 'int __fastcall foo(void* ctx, int len)')"],
+    prototype: Annotated[
+        str, "Full C prototype (e.g. 'int __fastcall foo(void* ctx, int len)')"
+    ],
 ) -> str:
     """Set a function's full calling convention and prototype."""
     bv = require_bv()
@@ -763,7 +813,7 @@ def set_function_prototype(
             except Exception as e:
                 log_debug(f"set_function_prototype {meth_name} failed at 0x{ea:x}: {e}")
     try:
-        setattr(func, "type", t)
+        func.type = t
         return f"Set prototype at 0x{int(getattr(func, 'start', ea)):x}: {prototype}"
     except Exception as e:
         log_debug(f"set_function_prototype setattr failed at 0x{ea:x}: {e}")
@@ -799,7 +849,7 @@ def suggest_struct_from_accesses(
         return "HLIL not available for this function"
 
     pattern = re.compile(r"\+\s*0x([0-9a-fA-F]+)")
-    offsets: Dict[int, int] = {}
+    offsets: dict[int, int] = {}
     instructions = list(getattr(hlil, "instructions", []) or [])
     for ins in instructions:
         text = str(ins)
@@ -810,9 +860,14 @@ def suggest_struct_from_accesses(
     if not offsets:
         return "No pointer field accesses detected in this function"
 
-    lines = [f"Suggested struct from access analysis at 0x{int(getattr(func, 'start', ea)):x}:", ""]
+    lines = [
+        f"Suggested struct from access analysis at 0x{int(getattr(func, 'start', ea)):x}:",
+        "",
+    ]
     for off, count in sorted(offsets.items()):
-        lines.append(f"  +0x{off:04x}  uint32_t         field_{off:x};    // accessed {count}x")
+        lines.append(
+            f"  +0x{off:04x}  uint32_t         field_{off:x};    // accessed {count}x"
+        )
     est_size = max(offsets.keys()) + 4
     lines.append(f"\nEstimated struct size: {est_size} (0x{est_size:x}) bytes")
     lines.append("\nSuggested C declaration:")
@@ -902,7 +957,9 @@ def import_type_from_library(
                 try:
                     t = meth(type_name)
                 except Exception as e:
-                    log_debug(f"import_type_from_library {meth_name} failed for {type_name!r}: {e}")
+                    log_debug(
+                        f"import_type_from_library {meth_name} failed for {type_name!r}: {e}"
+                    )
                     t = None
                 if t is not None and define_user_type(bv, type_name, t):
                     return f"Imported '{type_name}' from '{til_name}'"
@@ -911,7 +968,9 @@ def import_type_from_library(
     try:
         parsed = _define_types_from_source(bv, f"typedef {type_name} {type_name};")
     except Exception as e:
-        log_debug(f"import_type_from_library fallback parse failed for {type_name!r}: {e}")
+        log_debug(
+            f"import_type_from_library fallback parse failed for {type_name!r}: {e}"
+        )
         parsed = {}
     if type_name in parsed:
         return f"Imported '{type_name}' from '{til_name}'"

@@ -1,4 +1,4 @@
-"""Tests for rikugan.tools.types_tools — IDA type engineering tools."""
+"""Tests for rikugan.ida.tools.types_tools — IDA type engineering tools."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from tests.mocks.ida_mock import install_ida_mocks
 
 install_ida_mocks()
 
-import rikugan.tools.types_tools as types_tools
+import rikugan.ida.tools.types_tools as types_tools
 from rikugan.core.errors import ToolError
 
 
@@ -21,14 +21,17 @@ from rikugan.core.errors import ToolError
 # ---------------------------------------------------------------------------
 
 class TestRequireIdaEnum(unittest.TestCase):
-    def test_raises_when_ida_enum_none(self):
-        orig = types_tools.ida_enum
+    def test_raises_when_ida_enum_and_idc_none(self):
+        orig_enum = types_tools.ida_enum
+        orig_idc = types_tools.idc
         try:
             types_tools.ida_enum = None
+            types_tools.idc = None
             with self.assertRaises(ToolError):
                 types_tools._require_ida_enum()
         finally:
-            types_tools.ida_enum = orig
+            types_tools.ida_enum = orig_enum
+            types_tools.idc = orig_idc
 
     def test_no_raise_when_available(self):
         orig = types_tools.ida_enum

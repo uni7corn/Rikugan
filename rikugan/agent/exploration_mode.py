@@ -11,12 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
-
 
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
+
 
 class ExplorationPhase(str, Enum):
     EXPLORE = "explore"
@@ -29,9 +28,11 @@ class ExplorationPhase(str, Enum):
 # Knowledge Base — structured accumulator of exploration findings
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FunctionInfo:
     """A function discovered during exploration."""
+
     address: int
     name: str
     summary: str = ""
@@ -42,17 +43,19 @@ class FunctionInfo:
 @dataclass
 class StringRef:
     """A string reference found during exploration."""
+
     address: int
     value: str
-    xref_functions: List[int] = field(default_factory=list)
+    xref_functions: list[int] = field(default_factory=list)
     relevance: str = "medium"
 
 
 @dataclass
 class Finding:
     """A single exploration finding logged via the exploration_report pseudo-tool."""
+
     category: str  # function_purpose, data_structure, constant, hypothesis, string_ref, import_usage
-    address: Optional[int]
+    address: int | None
     summary: str
     evidence: str = ""
     relevance: str = "medium"
@@ -61,12 +64,13 @@ class Finding:
 @dataclass
 class KnowledgeBase:
     """Accumulated knowledge from the exploration phase."""
+
     user_goal: str = ""
-    relevant_functions: Dict[int, FunctionInfo] = field(default_factory=dict)
-    relevant_strings: List[StringRef] = field(default_factory=list)
-    relevant_imports: List[str] = field(default_factory=list)
-    findings: List[Finding] = field(default_factory=list)
-    hypotheses: List[str] = field(default_factory=list)
+    relevant_functions: dict[int, FunctionInfo] = field(default_factory=dict)
+    relevant_strings: list[StringRef] = field(default_factory=list)
+    relevant_imports: list[str] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    hypotheses: list[str] = field(default_factory=list)
     _seen_addresses: set = field(default_factory=set, repr=False)
 
     def add_finding(self, finding: Finding) -> None:
@@ -78,7 +82,10 @@ class KnowledgeBase:
         if finding.address is not None and finding.address in self._seen_addresses:
             # Update existing finding at same address
             for i, existing in enumerate(self.findings):
-                if existing.address == finding.address and existing.category == finding.category:
+                if (
+                    existing.address == finding.address
+                    and existing.category == finding.category
+                ):
                     self.findings[i] = finding
                     return
         if finding.address is not None:
@@ -113,7 +120,9 @@ class KnowledgeBase:
             gaps.append("0 relevant functions (need ≥1)")
         if len(self.hypotheses) < 1:
             gaps.append("0 hypotheses (need ≥1)")
-        elif not any(f.relevance == "high" for f in self.findings if f.category == "hypothesis"):
+        elif not any(
+            f.relevance == "high" for f in self.findings if f.category == "hypothesis"
+        ):
             gaps.append("0 high-relevance hypotheses (need ≥1 with relevance='high')")
         return "; ".join(gaps) if gaps else ""
 
@@ -155,9 +164,11 @@ class KnowledgeBase:
 # Modification Plan — output of Phase 2
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PlannedChange:
     """A single planned modification to the binary."""
+
     index: int
     target_address: int
     current_behavior: str
@@ -169,7 +180,8 @@ class PlannedChange:
 @dataclass
 class ModificationPlan:
     """The complete modification plan generated in Phase 2."""
-    changes: List[PlannedChange] = field(default_factory=list)
+
+    changes: list[PlannedChange] = field(default_factory=list)
     rationale: str = ""
     verification_plan: str = ""
 
@@ -178,9 +190,11 @@ class ModificationPlan:
 # Patch Record — tracking for Phase 3 (in-memory patches)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PatchRecord:
     """Record of a single in-memory patch applied during Phase 3."""
+
     address: int
     original_bytes: bytes
     new_bytes: bytes
@@ -193,7 +207,8 @@ class PatchRecord:
 @dataclass
 class PatchSummary:
     """Summary of all patches for the save approval gate (Phase 4)."""
-    patches: List[PatchRecord] = field(default_factory=list)
+
+    patches: list[PatchRecord] = field(default_factory=list)
     total_bytes_modified: int = 0
     all_verified: bool = False
     target_file: str = ""
@@ -201,20 +216,24 @@ class PatchSummary:
     def compute(self) -> None:
         """Recompute summary fields from patch list."""
         self.total_bytes_modified = sum(len(p.new_bytes) for p in self.patches)
-        self.all_verified = all(p.verified for p in self.patches) if self.patches else False
+        self.all_verified = (
+            all(p.verified for p in self.patches) if self.patches else False
+        )
 
 
 # ---------------------------------------------------------------------------
 # Exploration State — the full state machine
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ExplorationState:
     """Full state of the exploration mode across all phases."""
+
     phase: ExplorationPhase = ExplorationPhase.EXPLORE
     knowledge_base: KnowledgeBase = field(default_factory=KnowledgeBase)
-    modification_plan: Optional[ModificationPlan] = None
-    patches_applied: List[PatchRecord] = field(default_factory=list)
+    modification_plan: ModificationPlan | None = None
+    patches_applied: list[PatchRecord] = field(default_factory=list)
     explore_turns: int = 0
     execute_turns: int = 0
     total_turns: int = 0  # monotonic counter across all phases (for UI)
@@ -222,7 +241,7 @@ class ExplorationState:
     max_execute_turns: int = 20
     explore_only: bool = False  # /explore mode — no patching
 
-    def can_transition_to(self, target: ExplorationPhase) -> Tuple[bool, str]:
+    def can_transition_to(self, target: ExplorationPhase) -> tuple[bool, str]:
         """Validate whether a phase transition is allowed.
 
         Returns (allowed: bool, reason: str).
@@ -235,10 +254,7 @@ class ExplorationState:
                 return (False, "Can only transition to PLAN from EXPLORE phase.")
             if not self.knowledge_base.has_minimum_for_planning:
                 gap = self.knowledge_base.planning_gap_description
-                return (
-                    False,
-                    f"Not enough findings to plan. {gap}. Keep exploring."
-                )
+                return (False, f"Not enough findings to plan. {gap}. Keep exploring.")
             return (True, "")
 
         if target == ExplorationPhase.EXECUTE:

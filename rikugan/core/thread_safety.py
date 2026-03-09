@@ -5,23 +5,25 @@ from __future__ import annotations
 import functools
 import importlib
 import threading
-from typing import Any, Callable, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+from .host import BINARY_NINJA_AVAILABLE as _BN_AVAILABLE
+from .host import IDA_AVAILABLE as _IDA_AVAILABLE
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-from ..constants import IDA_AVAILABLE as _IDA_AVAILABLE, BINARY_NINJA_AVAILABLE as _BN_AVAILABLE
 if _IDA_AVAILABLE:
     ida_kernwin = importlib.import_module("ida_kernwin")
+bn_mainthread: Any = None
 if _BN_AVAILABLE:
     try:
         bn_mainthread = importlib.import_module("binaryninja.mainthread")
     except ImportError:
-        bn_mainthread = None
-else:
-    bn_mainthread = None
+        pass
 
 
-_TRACE_ENABLED: Optional[bool] = None
+_TRACE_ENABLED: bool | None = None
 
 
 def _log(msg: str) -> None:
@@ -33,7 +35,9 @@ def _log(msg: str) -> None:
     global _TRACE_ENABLED
     try:
         import logging as _logging
+
         from .logging import get_logger, log_trace
+
         if _TRACE_ENABLED is None:
             _TRACE_ENABLED = get_logger().isEnabledFor(_logging.DEBUG)
         if not _TRACE_ENABLED:
@@ -50,6 +54,7 @@ def idasync(func: F) -> F:
     Binary Ninja: uses ``binaryninja.mainthread.execute_on_main_thread_and_wait``.
     Other hosts: executes directly.
     """
+
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         fname = func.__name__
@@ -60,7 +65,9 @@ def idasync(func: F) -> F:
                 _log(f"idasync: {fname} on main thread — direct call")
                 return func(*args, **kwargs)
 
-            _log(f"idasync: {fname} on {threading.current_thread().name} — execute_sync START")
+            _log(
+                f"idasync: {fname} on {threading.current_thread().name} — execute_sync START"
+            )
             result_holder: list = []
             error_holder: list = []
 
@@ -88,14 +95,18 @@ def idasync(func: F) -> F:
 
             exec_wait = getattr(bn_mainthread, "execute_on_main_thread_and_wait", None)
             if not callable(exec_wait):
-                _log(f"bnsync: {fname} no execute_on_main_thread_and_wait — direct call fallback")
+                _log(
+                    f"bnsync: {fname} no execute_on_main_thread_and_wait — direct call fallback"
+                )
                 return func(*args, **kwargs)
 
-            _log(f"bnsync: {fname} on {threading.current_thread().name} — execute_on_main_thread_and_wait START")
-            result_holder: list = []
-            error_holder: list = []
+            _log(
+                f"bnsync: {fname} on {threading.current_thread().name} — execute_on_main_thread_and_wait START"
+            )
+            result_holder: list = []  # type: ignore[no-redef]
+            error_holder: list = []  # type: ignore[no-redef]
 
-            def _thunk() -> None:
+            def _thunk() -> None:  # type: ignore[misc]
                 try:
                     _log(f"bnsync: {fname} _thunk executing on main thread")
                     result_holder.append(func(*args, **kwargs))
@@ -116,7 +127,9 @@ def idasync(func: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
-def run_in_background(func: Callable[..., Any], *args: Any, **kwargs: Any) -> threading.Thread:
+def run_in_background(
+    func: Callable[..., Any], *args: Any, **kwargs: Any
+) -> threading.Thread:
     """Run *func* in a daemon background thread."""
     thread = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
     thread.start()

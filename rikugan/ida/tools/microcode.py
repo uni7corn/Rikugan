@@ -16,18 +16,27 @@ from __future__ import annotations
 import importlib
 from typing import Annotated
 
-from ..constants import HAS_HEXRAYS as _HAS_HEXRAYS
-from ..core.errors import ToolError
-from ..core.logging import log_debug
-from .base import parse_addr, tool
+from ...core.errors import ToolError
+from ...core.host import HAS_HEXRAYS as _HAS_HEXRAYS
+from ...core.logging import log_debug
+from ...tools.base import parse_addr, tool
 from .microcode_format import (
-    require_hexrays, parse_maturity, maturity_label,
-    insn_text, format_mba, format_block, operand_detail,
-    func_name, get_pseudocode_text,
+    format_mba,
+    func_name,
+    get_pseudocode_text,
+    insn_text,
+    maturity_label,
+    operand_detail,
+    parse_maturity,
+    require_hexrays,
 )
 from .microcode_optim import (
-    installed_optimizers, remove_optimizer, compile_optimizer,
-    NopOptimizer, DynamicInsnOptimizer, DynamicBlockOptimizer,
+    DynamicBlockOptimizer,
+    DynamicInsnOptimizer,
+    NopOptimizer,
+    compile_optimizer,
+    installed_optimizers,
+    remove_optimizer,
 )
 
 ida_hexrays = ida_funcs = ida_range = None
@@ -44,6 +53,7 @@ except ImportError as e:
 # ---------------------------------------------------------------------------
 
 if _HAS_HEXRAYS:
+
     class _MBACapture(ida_hexrays.Hexrays_Hooks):  # type: ignore[misc]
         """Hexrays hook that captures the MBA at a target maturity level."""
 
@@ -52,7 +62,7 @@ if _HAS_HEXRAYS:
             self.target_maturity = target_maturity
             self.captured = None
 
-        def maturity(self, cfunc, new_maturity):  # noqa: N802 — IDA API name
+        def maturity(self, cfunc, new_maturity):
             try:
                 cur = cfunc.mba.maturity
                 if self.captured is None and cur == self.target_maturity:
@@ -60,6 +70,7 @@ if _HAS_HEXRAYS:
             except (AttributeError, RuntimeError) as e:
                 log_debug(f"_MBACapture hook: mba not yet available: {e}")
             return 0
+
 
 def _get_func_or_raise(ea: int):
     pfn = ida_funcs.get_func(ea)
@@ -91,14 +102,18 @@ def _gen_microcode_at(ea: int, maturity: int):
         hf = ida_hexrays.hexrays_failure_t()
         retlist = ida_hexrays.mlist_t()
         mba = ida_hexrays.gen_microcode(
-            mbr, hf, retlist,
+            mbr,
+            hf,
+            retlist,
             ida_hexrays.DECOMP_NO_WAIT,
             maturity,
         )
         if mba is not None:
             return mba
     except (AttributeError, RuntimeError) as e:
-        log_debug(f"gen_microcode unavailable or failed for {pfn.start_ea:#x}: {e}; using hook capture")
+        log_debug(
+            f"gen_microcode unavailable or failed for {pfn.start_ea:#x}: {e}; using hook capture"
+        )
 
     # --- Fallback: capture via Hexrays_Hooks during decompile() ---
     hook = _MBACapture(maturity)
@@ -106,7 +121,9 @@ def _gen_microcode_at(ea: int, maturity: int):
     try:
         ida_hexrays.decompile(pfn.start_ea)
     except (ida_hexrays.DecompilationFailure, RuntimeError) as e:
-        log_debug(f"_capture_at_maturity decompile failed (expected for hook capture): {e}")
+        log_debug(
+            f"_capture_at_maturity decompile failed (expected for hook capture): {e}"
+        )
     finally:
         hook.unhook()
 
@@ -122,6 +139,7 @@ def _gen_microcode_at(ea: int, maturity: int):
 # ---------------------------------------------------------------------------
 # Tool: get_microcode
 # ---------------------------------------------------------------------------
+
 
 @tool(category="microcode", requires_decompiler=True)
 def get_microcode(
@@ -231,13 +249,14 @@ def get_microcode_block(
 # Tool: nop_microcode
 # ---------------------------------------------------------------------------
 
+
 @tool(category="microcode", requires_decompiler=True, mutating=True)
 def nop_microcode(
     func_address: Annotated[str, "Address of the function to patch"],
     instruction_addresses: Annotated[
         str,
         "Comma-separated hex addresses of instructions to NOP "
-        "(e.g. '0x401004,0x401008,0x40100c')"
+        "(e.g. '0x401004,0x401008,0x40100c')",
     ],
     optimizer_name: Annotated[str, "Name for this NOP rule (for later removal)"] = "",
 ) -> str:
@@ -283,7 +302,7 @@ def nop_microcode(
         return f"Optimizer '{name}' installed (NOPs {len(target_eas)} EAs) but redecompilation error: {e}"
 
     return (
-        f"Optimizer '{name}' installed — NOPing {len(target_eas)} instructions.\n"
+        f"Optimizer '{name}' installed \u2014 NOPing {len(target_eas)} instructions.\n"
         f"Applied {opt.applied_count} times during redecompilation.\n"
         f"\n--- Cleaned pseudocode ---\n{pseudocode}"
     )
@@ -293,13 +312,16 @@ def nop_microcode(
 # Tool: install_microcode_optimizer
 # ---------------------------------------------------------------------------
 
+
 @tool(category="microcode", requires_decompiler=True, mutating=True)
 def install_microcode_optimizer(
     name: Annotated[str, "Unique name for this optimizer (used to remove it later)"],
-    description: Annotated[str, "What this optimizer does (for list_microcode_optimizers)"],
+    description: Annotated[
+        str, "What this optimizer does (for list_microcode_optimizers)"
+    ],
     optimizer_type: Annotated[
         str,
-        "Type: 'instruction' (called per-instruction) or 'block' (called per-block)"
+        "Type: 'instruction' (called per-instruction) or 'block' (called per-block)",
     ],
     python_code: Annotated[
         str,
@@ -307,7 +329,7 @@ def install_microcode_optimizer(
         "For instruction type: def optimize(blk, ins) -> int. "
         "For block type: def optimize(blk) -> int. "
         "Return the number of changes made (0 = no change). "
-        "All ida_hexrays constants (m_nop, m_mov, mop_r, etc.) are available."
+        "All ida_hexrays constants (m_nop, m_mov, mop_r, etc.) are available.",
     ],
 ) -> str:
     """Install a custom microcode optimizer written in Python.
@@ -385,6 +407,7 @@ def install_microcode_optimizer(
 # Tool: remove_microcode_optimizer
 # ---------------------------------------------------------------------------
 
+
 @tool(category="microcode", requires_decompiler=True, mutating=True)
 def remove_microcode_optimizer(
     name: Annotated[str, "Name of the optimizer to remove"],
@@ -402,6 +425,7 @@ def remove_microcode_optimizer(
 # Tool: list_microcode_optimizers
 # ---------------------------------------------------------------------------
 
+
 @tool(category="microcode", requires_decompiler=True)
 def list_microcode_optimizers() -> str:
     """List all currently installed microcode optimizers."""
@@ -411,17 +435,22 @@ def list_microcode_optimizers() -> str:
 
     lines = [f"Installed optimizers ({len(installed_optimizers)}):"]
     for opt_name, opt in installed_optimizers.items():
-        kind = "instruction" if isinstance(opt, (NopOptimizer, DynamicInsnOptimizer)) else "block"
+        kind = (
+            "instruction"
+            if isinstance(opt, (NopOptimizer, DynamicInsnOptimizer))
+            else "block"
+        )
         desc = getattr(opt, "description", "")
         if isinstance(opt, NopOptimizer):
             desc = f"NOP {len(opt.target_eas)} addresses (applied {opt.applied_count}x)"
-        lines.append(f"  {opt_name} [{kind}] — {desc}")
+        lines.append(f"  {opt_name} [{kind}] \u2014 {desc}")
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Tool: redecompile_function
 # ---------------------------------------------------------------------------
+
 
 @tool(category="microcode", requires_decompiler=True)
 def redecompile_function(
@@ -452,10 +481,8 @@ def redecompile_function(
 
     pseudocode = get_pseudocode_text(cfunc)
     active = list(installed_optimizers.keys())
-    status = f"Active optimizers: {', '.join(active)}" if active else "No optimizers active"
-
-    return (
-        f"=== Redecompiled {func_name(pfn)} ===\n"
-        f"{status}\n"
-        f"\n{pseudocode}"
+    status = (
+        f"Active optimizers: {', '.join(active)}" if active else "No optimizers active"
     )
+
+    return f"=== Redecompiled {func_name(pfn)} ===\n{status}\n\n{pseudocode}"

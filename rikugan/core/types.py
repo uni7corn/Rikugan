@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
 
 
 class Role(str, Enum):
@@ -20,7 +20,7 @@ class Role(str, Enum):
 class ToolCall:
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
 
     @staticmethod
     def make_id() -> str:
@@ -53,19 +53,23 @@ class TokenUsage:
 class Message:
     role: Role
     content: str = ""
-    tool_calls: List[ToolCall] = field(default_factory=list)
-    tool_results: List[ToolResult] = field(default_factory=list)
-    tool_call_id: Optional[str] = None
-    name: Optional[str] = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_results: list[ToolResult] = field(default_factory=list)
+    tool_call_id: str | None = None
+    name: str | None = None
     timestamp: float = field(default_factory=time.time)
-    token_usage: Optional[TokenUsage] = None
+    token_usage: TokenUsage | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     # Provider-specific raw response data (e.g. Gemini parts with thought_signatures).
     # Not serialized to JSON — only kept in-memory for the current session.
     _raw_parts: Any = field(default=None, repr=False)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"role": self.role.value, "id": self.id, "timestamp": self.timestamp}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "role": self.role.value,
+            "id": self.id,
+            "timestamp": self.timestamp,
+        }
         if self.content:
             d["content"] = self.content
         if self.tool_calls:
@@ -79,8 +83,12 @@ class Message:
             d["name"] = self.name
         if self.tool_results:
             d["tool_results"] = [
-                {"tool_call_id": tr.tool_call_id, "name": tr.name,
-                 "content": tr.content, "is_error": tr.is_error}
+                {
+                    "tool_call_id": tr.tool_call_id,
+                    "name": tr.name,
+                    "content": tr.content,
+                    "is_error": tr.is_error,
+                }
                 for tr in self.tool_results
             ]
         if self.token_usage:
@@ -94,15 +102,17 @@ class Message:
         return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "Message":
+    def from_dict(cls, d: dict[str, Any]) -> Message:
         tool_calls = [
             ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
             for tc in d.get("tool_calls", [])
         ]
         tool_results = [
             ToolResult(
-                tool_call_id=tr["tool_call_id"], name=tr["name"],
-                content=tr["content"], is_error=tr.get("is_error", False),
+                tool_call_id=tr["tool_call_id"],
+                name=tr["name"],
+                content=tr["content"],
+                is_error=tr.get("is_error", False),
             )
             for tr in d.get("tool_results", [])
         ]
@@ -154,13 +164,69 @@ class ModelInfo:
 @dataclass
 class StreamChunk:
     """A single chunk from a streaming response."""
+
     text: str = ""
-    tool_call_id: Optional[str] = None
-    tool_name: Optional[str] = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
     tool_args_delta: str = ""
-    finish_reason: Optional[str] = None
-    usage: Optional[TokenUsage] = None
+    finish_reason: str | None = None
+    usage: TokenUsage | None = None
     is_tool_call_start: bool = False
     is_tool_call_end: bool = False
     # Provider-specific raw response parts (e.g. Gemini parts with thought_signatures).
     raw_parts: Any = None
+
+
+# ---------------------------------------------------------------------------
+# User approval / decision protocol
+# ---------------------------------------------------------------------------
+
+
+class UserDecision(str, Enum):
+    """Typed decisions for approval and save flows."""
+
+    APPROVE = "approve"
+    CANCEL = "cancel"
+    REGENERATE = "regenerate"
+    SAVE = "save"
+    DISCARD = "discard"
+    FEEDBACK = "feedback"
+
+
+@dataclass
+class UserAnswer:
+    """Parsed user answer with optional free-text feedback."""
+
+    decision: UserDecision
+    feedback: str = ""
+
+
+_APPROVE_WORDS = frozenset({"approve", "1", "yes", "y"})
+_CANCEL_WORDS = frozenset({"cancel", "no", "n"})
+_SAVE_WORDS = frozenset({"save all", "save", "1", "yes", "y"})
+
+
+def parse_approval(raw: str) -> UserAnswer:
+    """Parse a raw user string into an approval decision.
+
+    Used for plan approval and modification-plan approval flows.
+    """
+    text = raw.strip().lower()
+    if text in _APPROVE_WORDS:
+        return UserAnswer(UserDecision.APPROVE)
+    if text in _CANCEL_WORDS:
+        return UserAnswer(UserDecision.CANCEL)
+    if text == "regenerate":
+        return UserAnswer(UserDecision.REGENERATE)
+    return UserAnswer(UserDecision.FEEDBACK, feedback=raw.strip())
+
+
+def parse_save_decision(raw: str) -> UserAnswer:
+    """Parse a raw user string into a save/discard decision.
+
+    Used for the exploration mode save phase.
+    """
+    text = raw.strip().lower()
+    if text in _SAVE_WORDS:
+        return UserAnswer(UserDecision.SAVE)
+    return UserAnswer(UserDecision.DISCARD)

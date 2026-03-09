@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 from .logging import log_debug
 
@@ -11,7 +11,7 @@ from .logging import log_debug
 # IOC filter categories — keys used in AnalysisProfile.ioc_filters
 # ---------------------------------------------------------------------------
 
-IOC_FILTER_CATEGORIES: Dict[str, str] = {
+IOC_FILTER_CATEGORIES: dict[str, str] = {
     "hashes": "File hashes (MD5, SHA1, SHA256)",
     "ipv4": "IPv4 addresses",
     "ipv6": "IPv6 addresses",
@@ -25,19 +25,18 @@ IOC_FILTER_CATEGORIES: Dict[str, str] = {
 }
 
 
-
 @dataclass
 class AnalysisProfile:
     """A named analysis profile that controls data filtering and tool access."""
 
     name: str
     description: str = ""
-    denied_tools: List[str] = field(default_factory=list)
-    denied_functions: List[str] = field(default_factory=list)
-    custom_filters: List[str] = field(default_factory=list)
+    denied_tools: list[str] = field(default_factory=list)
+    denied_functions: list[str] = field(default_factory=list)
+    custom_filters: list[str] = field(default_factory=list)
     hide_binary_metadata: bool = False
-    ioc_filters: Dict[str, bool] = field(default_factory=dict)
-    custom_filter_rules: List[Dict[str, Any]] = field(default_factory=list)
+    ioc_filters: dict[str, bool] = field(default_factory=dict)
+    custom_filter_rules: list[dict[str, Any]] = field(default_factory=list)
     singular_analysis: bool = False
     builtin: bool = False
 
@@ -51,7 +50,7 @@ class AnalysisProfile:
         """Backward-compat property — True when any IOC filter is active."""
         return self.has_any_ioc_filter
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to a dict suitable for JSON storage."""
         d = asdict(self)
         # Don't persist the builtin flag — it's derived at load time
@@ -59,7 +58,7 @@ class AnalysisProfile:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> AnalysisProfile:
+    def from_dict(cls, data: dict[str, Any]) -> AnalysisProfile:
         """Deserialize from a dict."""
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known_fields}
@@ -93,7 +92,7 @@ PRIVATE_PROFILE = AnalysisProfile(
     builtin=True,
 )
 
-_BUILTIN_PROFILES: Dict[str, AnalysisProfile] = {
+_BUILTIN_PROFILES: dict[str, AnalysisProfile] = {
     "default": DEFAULT_PROFILE,
     "private": PRIVATE_PROFILE,
 }
@@ -103,7 +102,10 @@ _BUILTIN_PROFILES: Dict[str, AnalysisProfile] = {
 # Public helpers
 # ---------------------------------------------------------------------------
 
-def get_profile(name: str, custom_profiles: Dict[str, Dict] | None = None) -> AnalysisProfile:
+
+def get_profile(
+    name: str, custom_profiles: dict[str, dict] | None = None
+) -> AnalysisProfile:
     """Look up a profile by name.
 
     Checks built-in profiles first, then custom profiles from config.
@@ -127,9 +129,11 @@ def get_profile(name: str, custom_profiles: Dict[str, Dict] | None = None) -> An
     return DEFAULT_PROFILE
 
 
-def list_profiles(custom_profiles: Dict[str, Dict] | None = None) -> List[AnalysisProfile]:
+def list_profiles(
+    custom_profiles: dict[str, dict] | None = None,
+) -> list[AnalysisProfile]:
     """List all available profiles (builtins + custom)."""
-    profiles: List[AnalysisProfile] = list(_BUILTIN_PROFILES.values())
+    profiles: list[AnalysisProfile] = list(_BUILTIN_PROFILES.values())
 
     if custom_profiles:
         for name, data in sorted(custom_profiles.items()):

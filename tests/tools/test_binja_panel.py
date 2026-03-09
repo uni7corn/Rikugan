@@ -7,44 +7,8 @@ import types
 import unittest
 from unittest.mock import MagicMock
 
-
-# ---------------------------------------------------------------------------
-# PySide6 stub injection
-# ---------------------------------------------------------------------------
-
-def _qt_class(name: str) -> type:
-    return type(name, (), {"__init__": lambda self, *a, **k: None})
-
-
-class _Signal:
-    def __init__(self, *a): pass
-    def connect(self, *a): pass
-    def emit(self, *a): pass
-    def __get__(self, obj, objtype=None): return self
-
-
-_widget_names = [
-    "QApplication", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel",
-    "QPushButton", "QPlainTextEdit", "QScrollArea", "QFrame", "QSplitter",
-    "QDialog", "QDialogButtonBox", "QComboBox", "QLineEdit", "QSpinBox",
-    "QDoubleSpinBox", "QCheckBox", "QGroupBox", "QFormLayout",
-    "QToolButton", "QSizePolicy", "QTabWidget", "QTabBar",
-    "QFileDialog", "QMenu", "QMessageBox",
-]
-
-_core_mod = types.ModuleType("PySide6.QtCore")
-_core_mod.Signal = _Signal
-_core_mod.Qt = object()
-_core_mod.QObject = _qt_class("QObject")
-_core_mod.QTimer = _qt_class("QTimer")
-
-_widget_mod = types.ModuleType("PySide6.QtWidgets")
-for _n in _widget_names:
-    setattr(_widget_mod, _n, _qt_class(_n))
-
-sys.modules.setdefault("PySide6", types.ModuleType("PySide6"))
-sys.modules.setdefault("PySide6.QtCore", _core_mod)
-sys.modules.setdefault("PySide6.QtWidgets", _widget_mod)
+from tests.qt_stubs import ensure_pyside6_stubs, _qt_class
+ensure_pyside6_stubs()
 
 # Stub out binaryninja and the heavy rikugan modules panel.py imports
 sys.modules.setdefault("binaryninja", types.ModuleType("binaryninja"))
@@ -68,6 +32,8 @@ def _make_panel() -> RikuganPanel:
     """Create a RikuganPanel bypassing __init__ and inject a mock _core."""
     panel = object.__new__(RikuganPanel)
     panel._core = MagicMock()
+    panel.parent = MagicMock(return_value=None)
+    panel.setParent = MagicMock()
     return panel
 
 
@@ -88,8 +54,10 @@ class TestRikuganPanelDelegation(unittest.TestCase):
 
     def test_shutdown_delegates_to_core(self):
         panel = _make_panel()
+        core = panel._core
         panel.shutdown()
-        panel._core.shutdown.assert_called_once()
+        core.shutdown.assert_called_once()
+        self.assertIsNone(panel._core)
 
     def test_on_database_changed_delegates_to_core(self):
         panel = _make_panel()

@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional
-
 import re as _re
+from typing import ClassVar
 
 from .qt_compat import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton,
-    QWidget, QSizePolicy, Qt, Signal, QTimer, QPlainTextEdit,
+    QColor,
+    QFont,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QSyntaxHighlighter,
+    Qt,
+    QTextCharFormat,
+    QTimer,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    Signal,
 )
-
-from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont
 
 _MAX_ARGS_DISPLAY = 2000
 _MAX_RESULT_DISPLAY = 3000
@@ -22,54 +31,103 @@ _TOOL_PREVIEW_LINES = 3
 # MCP prefix stripping — works with any MCP server, not just a specific one
 # ---------------------------------------------------------------------------
 
+
 def _strip_mcp_prefix(name: str) -> str:
     """Strip MCP server prefix (``mcp__<server>__``) from tool names."""
     if name.startswith("mcp__"):
         rest = name[5:]  # after "mcp__"
         idx = rest.find("__")
         if idx >= 0:
-            return rest[idx + 2:]
+            return rest[idx + 2 :]
     return name
 
 
 # ---------------------------------------------------------------------------
 # Tool-specific colors (by base name — MCP prefix is stripped before lookup)
 # ---------------------------------------------------------------------------
-_TOOL_COLORS: Dict[str, str] = {}
+_TOOL_COLORS: dict[str, str] = {}
 
 # Analysis (read-only) -> teal/cyan
 for _t in (
-    "decompile_function", "read_disassembly", "read_function_disassembly",
-    "get_binary_info", "list_imports", "list_exports", "list_functions",
-    "search_functions", "list_strings", "search_strings", "get_string_at",
-    "list_segments", "xrefs_to", "xrefs_from", "function_xrefs",
-    "get_microcode", "get_cursor_position", "get_current_function",
-    "fetch_disassembly", "list_methods", "list_strings_filter",
-    "list_sections", "get_xrefs_to", "get_xrefs_to_field",
-    "get_xrefs_to_struct", "get_xrefs_to_type", "get_xrefs_to_enum",
-    "get_xrefs_to_union", "get_il", "get_binary_status",
-    "hexdump_address", "hexdump_data", "get_data_decl",
-    "search_functions_by_name", "function_at", "get_entry_points",
-    "list_classes", "list_namespaces", "list_data_items",
-    "list_all_strings", "list_local_types", "search_types",
-    "get_type_info", "get_user_defined_type",
-    "get_comment", "get_function_comment",
-    "list_binaries", "select_binary", "list_platforms",
-    "convert_number", "format_value",
+    "decompile_function",
+    "read_disassembly",
+    "read_function_disassembly",
+    "get_binary_info",
+    "list_imports",
+    "list_exports",
+    "list_functions",
+    "search_functions",
+    "list_strings",
+    "search_strings",
+    "get_string_at",
+    "list_segments",
+    "xrefs_to",
+    "xrefs_from",
+    "function_xrefs",
+    "get_microcode",
+    "get_cursor_position",
+    "get_current_function",
+    "fetch_disassembly",
+    "list_methods",
+    "list_strings_filter",
+    "list_sections",
+    "get_xrefs_to",
+    "get_xrefs_to_field",
+    "get_xrefs_to_struct",
+    "get_xrefs_to_type",
+    "get_xrefs_to_enum",
+    "get_xrefs_to_union",
+    "get_il",
+    "get_binary_status",
+    "hexdump_address",
+    "hexdump_data",
+    "get_data_decl",
+    "search_functions_by_name",
+    "function_at",
+    "get_entry_points",
+    "list_classes",
+    "list_namespaces",
+    "list_data_items",
+    "list_all_strings",
+    "list_local_types",
+    "search_types",
+    "get_type_info",
+    "get_user_defined_type",
+    "get_comment",
+    "get_function_comment",
+    "list_binaries",
+    "select_binary",
+    "list_platforms",
+    "convert_number",
+    "format_value",
 ):
     _TOOL_COLORS[_t] = "#4ec9b0"  # teal/cyan
 
 # Modification -> magenta/purple
 for _t in (
-    "rename_function", "rename_variable", "rename_address",
-    "set_type", "set_function_prototype", "set_comment",
-    "set_function_comment", "create_struct", "create_enum",
-    "nop_microcode", "install_microcode_optimizer",
-    "redecompile_function", "apply_struct_to_address",
-    "rename_single_variable", "rename_multi_variables",
-    "retype_variable", "define_types", "declare_c_type",
-    "rename_data", "set_local_variable_type", "make_function_at",
-    "delete_comment", "delete_function_comment",
+    "rename_function",
+    "rename_variable",
+    "rename_address",
+    "set_type",
+    "set_function_prototype",
+    "set_comment",
+    "set_function_comment",
+    "create_struct",
+    "create_enum",
+    "nop_microcode",
+    "install_microcode_optimizer",
+    "redecompile_function",
+    "apply_struct_to_address",
+    "rename_single_variable",
+    "rename_multi_variables",
+    "retype_variable",
+    "define_types",
+    "declare_c_type",
+    "rename_data",
+    "set_local_variable_type",
+    "make_function_at",
+    "delete_comment",
+    "delete_function_comment",
 ):
     _TOOL_COLORS[_t] = "#c586c0"  # magenta/purple
 
@@ -83,7 +141,7 @@ for _t in ("execute_python",):
 
 _DEFAULT_TOOL_COLOR = "#569cd6"  # blue
 
-_TOOL_GROUP_LABELS: Dict[str, tuple[str, str]] = {
+_TOOL_GROUP_LABELS: dict[str, tuple[str, str]] = {
     "decompile_function": ("Decompiled", "function"),
     "read_disassembly": ("Disassembled", "function"),
     "read_function_disassembly": ("Disassembled", "function"),
@@ -101,7 +159,7 @@ def _tool_color(name: str) -> str:
     return _TOOL_COLORS.get(_strip_mcp_prefix(name), _DEFAULT_TOOL_COLOR)
 
 
-def _format_tool_group_label(tool_names: List[str]) -> str:
+def _format_tool_group_label(tool_names: list[str]) -> str:
     """Human-friendly group label for collapsed tool-call runs."""
     count = len(tool_names)
     if count <= 0:
@@ -124,6 +182,7 @@ def _format_tool_group_label(tool_names: List[str]) -> str:
 # ---------------------------------------------------------------------------
 # Smart tool parameter summaries
 # ---------------------------------------------------------------------------
+
 
 def _format_tool_summary(tool_name: str, args_text: str) -> str:
     """Extract the most relevant parameter for a compact one-line summary."""
@@ -179,21 +238,34 @@ def _format_tool_summary(tool_name: str, args_text: str) -> str:
         elif comment:
             summary = comment
 
-    elif short_name in ("set_type", "set_function_prototype", "retype_variable",
-                         "set_local_variable_type"):
+    elif short_name in (
+        "set_type",
+        "set_function_prototype",
+        "retype_variable",
+        "set_local_variable_type",
+    ):
         target = _get("ea", "address", "name", "name_or_address", "variable_name")
         type_str = _get("type_str", "prototype", "new_type", "type")
         if target and type_str:
             summary = f"{target}: {type_str}"
 
-    elif short_name in ("xrefs_to", "xrefs_from", "function_xrefs",
-                         "get_xrefs_to", "get_xrefs_to_field"):
+    elif short_name in (
+        "xrefs_to",
+        "xrefs_from",
+        "function_xrefs",
+        "get_xrefs_to",
+        "get_xrefs_to_field",
+    ):
         target = _get("address", "ea", "name", "struct_name")
         if target:
             summary = target
 
-    elif short_name in ("search_strings", "search_functions", "search_functions_by_name",
-                         "list_strings_filter"):
+    elif short_name in (
+        "search_strings",
+        "search_functions",
+        "search_functions_by_name",
+        "list_strings_filter",
+    ):
         query = _get("pattern", "query", "filter", "name")
         if query:
             summary = f'"{query}"'
@@ -216,7 +288,11 @@ def _format_tool_summary(tool_name: str, args_text: str) -> str:
                 first_line = first_line[:57] + "..."
             summary = first_line
 
-    elif short_name in ("fetch_disassembly", "read_disassembly", "read_function_disassembly"):
+    elif short_name in (
+        "fetch_disassembly",
+        "read_disassembly",
+        "read_function_disassembly",
+    ):
         target = _get("name", "ea", "address", "start")
         if target:
             summary = target
@@ -248,8 +324,17 @@ def _format_tool_summary(tool_name: str, args_text: str) -> str:
 
     else:
         # Generic: try common parameter names
-        for key in ("target", "address", "ea", "name", "path", "query",
-                     "pattern", "command", "name_or_address"):
+        for key in (
+            "target",
+            "address",
+            "ea",
+            "name",
+            "path",
+            "query",
+            "pattern",
+            "command",
+            "name_or_address",
+        ):
             val = _get(key)
             if val:
                 summary = val
@@ -287,6 +372,7 @@ def _make_preview_label() -> QLabel:
 # Shared spinner timer
 # ---------------------------------------------------------------------------
 
+
 class _SharedSpinnerTimer:
     """Single QTimer shared across all ToolCallWidget instances.
 
@@ -295,21 +381,21 @@ class _SharedSpinnerTimer:
     registers and stops when the last one unregisters.
     """
 
-    _instance: "_SharedSpinnerTimer | None" = None
+    _instance: _SharedSpinnerTimer | None = None
 
     def __init__(self) -> None:
         self._timer = QTimer()
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._tick)
-        self._widgets: set["ToolCallWidget"] = set()
+        self._widgets: set[ToolCallWidget] = set()
 
     @classmethod
-    def get(cls) -> "_SharedSpinnerTimer":
+    def get(cls) -> _SharedSpinnerTimer:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    def register(self, widget: "ToolCallWidget") -> None:
+    def register(self, widget: ToolCallWidget) -> None:
         self._widgets.add(widget)
         # NOTE: Do NOT connect to widget.destroyed here.  PySide6/Shiboken
         # under IDA may GC the lambda slot, leaving a dangling C++ pointer
@@ -319,7 +405,7 @@ class _SharedSpinnerTimer:
         if not self._timer.isActive():
             self._timer.start()
 
-    def unregister(self, widget: "ToolCallWidget") -> None:
+    def unregister(self, widget: ToolCallWidget) -> None:
         self._widgets.discard(widget)
         if not self._widgets and self._timer.isActive():
             self._timer.stop()
@@ -399,11 +485,15 @@ class ToolCallWidget(QFrame):
         header_layout.addWidget(self._bullet)
 
         self._name_label = QLabel(display_name)
-        self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
+        self._name_label.setStyleSheet(
+            f"color: {color}; font-weight: bold; font-size: 11px;"
+        )
         header_layout.addWidget(self._name_label)
 
         self._summary_label = QLabel("")
-        self._summary_label.setStyleSheet("color: #808080; font-size: 11px; margin-left: 6px;")
+        self._summary_label.setStyleSheet(
+            "color: #808080; font-size: 11px; margin-left: 6px;"
+        )
         header_layout.addWidget(self._summary_label, 1)
 
         self._status_label = QLabel(self._SPINNER_FRAMES[0])
@@ -427,18 +517,26 @@ class ToolCallWidget(QFrame):
         self._args_label = QLabel()
         self._args_label.setObjectName("tool_content")
         self._args_label.setWordWrap(True)
-        self._args_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._args_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._detail_layout.addWidget(self._args_label)
 
         self._result_header = QLabel("Result:")
-        self._result_header.setStyleSheet("color: #808080; font-size: 10px; font-weight: bold;")
+        self._result_header.setStyleSheet(
+            "color: #808080; font-size: 10px; font-weight: bold;"
+        )
         self._result_header.setVisible(False)
         self._detail_layout.addWidget(self._result_header)
 
         self._result_label = QLabel()
         self._result_label.setObjectName("tool_content")
         self._result_label.setWordWrap(True)
-        self._result_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._result_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._result_label.setVisible(False)
         self._detail_layout.addWidget(self._result_label)
 
@@ -471,7 +569,11 @@ class ToolCallWidget(QFrame):
             self._preview_label.setText(_truncate_preview(args_text.strip()))
             self._preview_label.setVisible(not self._expanded)
         # Full args in detail area
-        display = args_text[:_MAX_ARGS_DISPLAY] + "..." if len(args_text) > _MAX_ARGS_DISPLAY else args_text
+        display = (
+            args_text[:_MAX_ARGS_DISPLAY] + "..."
+            if len(args_text) > _MAX_ARGS_DISPLAY
+            else args_text
+        )
         self._args_label.setText(display)
 
     def append_args_delta(self, delta: str) -> None:
@@ -482,12 +584,18 @@ class ToolCallWidget(QFrame):
         self._stop_spinner()
         self._result_text = result
         self._is_error = is_error
-        display = result[:_MAX_RESULT_DISPLAY] + "\n... (truncated)" if len(result) > _MAX_RESULT_DISPLAY else result
+        display = (
+            result[:_MAX_RESULT_DISPLAY] + "\n... (truncated)"
+            if len(result) > _MAX_RESULT_DISPLAY
+            else result
+        )
         self._result_label.setText(display)
         self._result_label.setVisible(True)
         self._result_header.setVisible(True)
         if is_error:
-            self._result_label.setStyleSheet("color: #f44747; font-family: monospace; font-size: 11px;")
+            self._result_label.setStyleSheet(
+                "color: #f44747; font-family: monospace; font-size: 11px;"
+            )
             self._status_label.setText("✗")
             self._status_label.setStyleSheet("color: #f44747; font-size: 10px;")
             self._bullet.setStyleSheet("color: #f44747; font-size: 10px;")
@@ -515,6 +623,7 @@ class ToolCallWidget(QFrame):
 # Tool batch widget — groups N consecutive calls to the same tool
 # ---------------------------------------------------------------------------
 
+
 class ToolBatchWidget(QFrame):
     """Groups consecutive calls to the same tool.
 
@@ -529,10 +638,10 @@ class ToolBatchWidget(QFrame):
         self._count = 0
         self._expanded = False
         self._first_args: str = ""
-        self._tool_call_ids: List[str] = []
-        self._results: Dict[str, str] = {}
-        self._errors: Dict[str, str] = {}
-        self._entry_labels: List[QLabel] = []
+        self._tool_call_ids: list[str] = []
+        self._results: dict[str, str] = {}
+        self._errors: dict[str, str] = {}
+        self._entry_labels: list[QLabel] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -564,11 +673,15 @@ class ToolBatchWidget(QFrame):
         header_layout.addWidget(self._bullet)
 
         self._name_label = QLabel(display_name)
-        self._name_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
+        self._name_label.setStyleSheet(
+            f"color: {color}; font-weight: bold; font-size: 11px;"
+        )
         header_layout.addWidget(self._name_label)
 
         self._count_label = QLabel("")
-        self._count_label.setStyleSheet("color: #808080; font-size: 11px; margin-left: 6px;")
+        self._count_label.setStyleSheet(
+            "color: #808080; font-size: 11px; margin-left: 6px;"
+        )
         header_layout.addWidget(self._count_label, 1)
 
         self._status_label = QLabel("…")
@@ -636,7 +749,9 @@ class ToolBatchWidget(QFrame):
             label_text = f"#{idx + 1}: {summary}" if summary else f"#{idx + 1}"
             item.widget().setText(label_text)
 
-    def set_result_for_call(self, tool_call_id: str, result: str, is_error: bool) -> None:
+    def set_result_for_call(
+        self, tool_call_id: str, result: str, is_error: bool
+    ) -> None:
         """Record a result for one call in the batch."""
         if is_error:
             self._errors[tool_call_id] = result
@@ -648,7 +763,9 @@ class ToolBatchWidget(QFrame):
         done = len(self._results) + len(self._errors)
         if done >= self._count:
             if self._errors:
-                self._status_label.setText(f"✓{len(self._results)} ✗{len(self._errors)}")
+                self._status_label.setText(
+                    f"✓{len(self._results)} ✗{len(self._errors)}"
+                )
                 self._status_label.setStyleSheet("color: #f44747; font-size: 10px;")
             else:
                 self._status_label.setText("✓")
@@ -675,6 +792,7 @@ class ToolBatchWidget(QFrame):
 # Tool group widget — collapsible container for runs of tool calls
 # ---------------------------------------------------------------------------
 
+
 class ToolGroupWidget(QFrame):
     """Collapsible group for a consecutive run of tool calls."""
 
@@ -685,7 +803,7 @@ class ToolGroupWidget(QFrame):
         self._count = 0
         self._done = 0
         self._errors = 0
-        self._tool_names: List[str] = []
+        self._tool_names: list[str] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -704,9 +822,7 @@ class ToolGroupWidget(QFrame):
         header_layout.addWidget(self._toggle_btn)
 
         self._label = QLabel("0 tools called")
-        self._label.setStyleSheet(
-            "color: #808080; font-size: 11px; font-weight: bold;"
-        )
+        self._label.setStyleSheet("color: #808080; font-size: 11px; font-weight: bold;")
         header_layout.addWidget(self._label, 1)
 
         self._status_label = QLabel("")
@@ -767,10 +883,11 @@ class ToolGroupWidget(QFrame):
 # Python syntax highlighter (used by ToolApprovalWidget)
 # ---------------------------------------------------------------------------
 
+
 class _PythonHighlighter(QSyntaxHighlighter):
     """Minimal VS Code-dark-style Python syntax highlighter."""
 
-    _RULES = []  # built once in __init_subclass__ — see below
+    _RULES: ClassVar[list] = []  # built once in __init_subclass__ — see below
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -792,23 +909,76 @@ class _PythonHighlighter(QSyntaxHighlighter):
         rules = []
         kw_fmt = _PythonHighlighter._fmt("#c586c0", bold=True)
         for kw in (
-            "and", "as", "assert", "async", "await", "break", "class",
-            "continue", "def", "del", "elif", "else", "except", "finally",
-            "for", "from", "global", "if", "import", "in", "is", "lambda",
-            "nonlocal", "not", "or", "pass", "raise", "return", "try",
-            "while", "with", "yield",
+            "and",
+            "as",
+            "assert",
+            "async",
+            "await",
+            "break",
+            "class",
+            "continue",
+            "def",
+            "del",
+            "elif",
+            "else",
+            "except",
+            "finally",
+            "for",
+            "from",
+            "global",
+            "if",
+            "import",
+            "in",
+            "is",
+            "lambda",
+            "nonlocal",
+            "not",
+            "or",
+            "pass",
+            "raise",
+            "return",
+            "try",
+            "while",
+            "with",
+            "yield",
         ):
             rules.append((_re.compile(rf"\b{kw}\b"), kw_fmt))
         # Built-ins
         bi_fmt = _PythonHighlighter._fmt("#dcdcaa")
-        for bi in ("print", "len", "range", "int", "str", "bytes", "list",
-                    "dict", "set", "tuple", "hex", "ord", "chr", "type",
-                    "isinstance", "enumerate", "zip", "map", "filter",
-                    "sorted", "open", "True", "False", "None"):
+        for bi in (
+            "print",
+            "len",
+            "range",
+            "int",
+            "str",
+            "bytes",
+            "list",
+            "dict",
+            "set",
+            "tuple",
+            "hex",
+            "ord",
+            "chr",
+            "type",
+            "isinstance",
+            "enumerate",
+            "zip",
+            "map",
+            "filter",
+            "sorted",
+            "open",
+            "True",
+            "False",
+            "None",
+        ):
             rules.append((_re.compile(rf"\b{bi}\b"), bi_fmt))
         # Numbers
-        rules.append((_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8")))
-        rules.append((_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8")))
+        rules.append(
+            (_re.compile(r"\b0[xX][0-9a-fA-F]+\b"), _PythonHighlighter._fmt("#b5cea8"))
+        )
+        rules.append(
+            (_re.compile(r"\b\d+\.?\d*\b"), _PythonHighlighter._fmt("#b5cea8"))
+        )
         # Strings (single/double, including f/r/b prefixes)
         str_fmt = _PythonHighlighter._fmt("#ce9178")
         rules.append((_re.compile(r'[brfu]?""".*?"""', _re.DOTALL), str_fmt))
@@ -816,11 +986,15 @@ class _PythonHighlighter(QSyntaxHighlighter):
         rules.append((_re.compile(r'[brfu]?"[^"\n]*"'), str_fmt))
         rules.append((_re.compile(r"[brfu]?'[^'\n]*'"), str_fmt))
         # Comments
-        rules.append((_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", italic=True)))
+        rules.append(
+            (_re.compile(r"#[^\n]*"), _PythonHighlighter._fmt("#6a9955", italic=True))
+        )
         # Decorators
         rules.append((_re.compile(r"@\w+"), _PythonHighlighter._fmt("#dcdcaa")))
         # self
-        rules.append((_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", italic=True)))
+        rules.append(
+            (_re.compile(r"\bself\b"), _PythonHighlighter._fmt("#9cdcfe", italic=True))
+        )
         return rules
 
     def highlightBlock(self, text: str) -> None:
@@ -832,11 +1006,15 @@ class _PythonHighlighter(QSyntaxHighlighter):
 class ToolApprovalWidget(QFrame):
     """Displays a tool approval request with syntax-highlighted code preview."""
 
-    approved = Signal(str, str)   # (tool_call_id, "allow" or "deny")
+    approved = Signal(str, str)  # (tool_call_id, "allow" or "deny")
 
     def __init__(
-        self, tool_call_id: str, tool_name: str, args_text: str,
-        description: str, parent: QWidget = None,
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        args_text: str,
+        description: str,
+        parent: QWidget = None,
     ):
         super().__init__(parent)
         self.setObjectName("message_question")
@@ -850,13 +1028,17 @@ class ToolApprovalWidget(QFrame):
         layout.setContentsMargins(8, 6, 8, 6)
 
         self._header = QLabel("Approve execute_python?")
-        self._header.setStyleSheet("color: #dcdcaa; font-weight: bold; font-size: 11px;")
+        self._header.setStyleSheet(
+            "color: #dcdcaa; font-weight: bold; font-size: 11px;"
+        )
         layout.addWidget(self._header)
 
         code = self._extract_code(args_text)
         code_lines = code.strip().splitlines() if code.strip() else []
 
-        self._info = QLabel(f"Python code — {len(code_lines)} line{'s' if len(code_lines) != 1 else ''}")
+        self._info = QLabel(
+            f"Python code — {len(code_lines)} line{'s' if len(code_lines) != 1 else ''}"
+        )
         self._info.setStyleSheet("color: #808080; font-size: 10px;")
         layout.addWidget(self._info)
 
@@ -875,7 +1057,7 @@ class ToolApprovalWidget(QFrame):
         except (json.JSONDecodeError, TypeError, AttributeError):
             return args_text
 
-    def _build_code_editor(self, code: str, lines: list) -> Optional[QPlainTextEdit]:
+    def _build_code_editor(self, code: str, lines: list) -> QPlainTextEdit | None:
         """Build a read-only syntax-highlighted code editor, or None if no code."""
         if not code.strip():
             return None

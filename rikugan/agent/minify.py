@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import re
 from copy import copy
-from typing import List
 
 from ..core.types import Message, ToolResult
 
@@ -37,9 +36,9 @@ def minify_text(text: str) -> str:
     return text
 
 
-def minify_messages(messages: List[Message]) -> List[Message]:
+def minify_messages(messages: list[Message]) -> list[Message]:
     """Return a shallow-copied message list with all text content minified."""
-    result: List[Message] = []
+    result: list[Message] = []
     for msg in messages:
         m = copy(msg)
         if m.content:

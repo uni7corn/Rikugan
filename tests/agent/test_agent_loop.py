@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import unittest
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from tests.mocks.ida_mock import install_ida_mocks
@@ -19,8 +19,8 @@ from rikugan.core.types import (
 from rikugan.core.config import RikuganConfig
 from rikugan.agent.loop import AgentLoop, BackgroundAgentRunner
 from rikugan.agent.exploration_mode import ExplorationState
-from rikugan.agent.turn import TurnEvent, TurnEventType
-from rikugan.tools.base import tool, ParameterSchema, ToolDefinition
+from rikugan.agent.turn import TurnEventType
+from rikugan.tools.base import ParameterSchema, ToolDefinition
 from rikugan.tools.registry import ToolRegistry
 from rikugan.state.session import SessionState
 from rikugan.providers.base import LLMProvider
@@ -57,6 +57,18 @@ class MockProvider(LLMProvider):
 
     def _normalize_response(self, raw):
         return raw
+
+    def _build_request_kwargs(self, messages, tools, temperature, max_tokens, system):
+        return {}
+
+    def _call_api(self, client, kwargs):
+        return None
+
+    def _handle_api_error(self, e):
+        raise e
+
+    def _stream_chunks(self, client, kwargs):
+        yield from ()
 
     def chat(self, messages, tools=None, temperature=0.3, max_tokens=4096, system=""):
         return Message(role=Role.ASSISTANT, content="mock response")

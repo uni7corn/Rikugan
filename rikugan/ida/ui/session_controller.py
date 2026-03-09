@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from rikugan.core.config import RikuganConfig
-from rikugan.core.host import get_database_path
-from rikugan.ida.tools.registry import create_default_registry
-from rikugan.ui.session_controller_base import SessionControllerBase
+from ...core.config import RikuganConfig
+from ...core.host import get_database_path
+from ...ui.session_controller_base import SessionControllerBase
+from ..tools.registry import create_default_registry
 
 
-class SessionController(SessionControllerBase):
+class IdaSessionController(SessionControllerBase):
     """IDA-oriented controller."""
 
     def __init__(self, config: RikuganConfig):
@@ -18,3 +18,7 @@ class SessionController(SessionControllerBase):
             database_path_getter=get_database_path,
             host_name="IDA Pro",
         )
+
+
+# Backwards-compatible alias
+SessionController = IdaSessionController

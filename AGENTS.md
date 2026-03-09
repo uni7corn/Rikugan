@@ -354,6 +354,59 @@ rikugan/agent/prompts/
 | `rikugan_plugin.py` | IDA Pro plugin entry point |
 | `rikugan_binaryninja.py` | Binary Ninja plugin entry point |
 
+## CI/CD & Branch Model
+
+### Branch Strategy
+
+```
+feat/my-thing  ─┐
+fix/some-bug   ─┤──► dev ──► main
+chore/deps     ─┘
+```
+
+- **`main`** — always releasable. Binary Ninja plugin manager tracks this branch directly. Never push here directly.
+- **`dev`** — integration branch. All feature/fix PRs target `dev`. Never push here directly.
+- **`feat/*`, `fix/*`, `chore/*`, `refactor/*`** — short-lived branches off `dev`. One logical change per branch.
+
+Direct pushes to `dev` and `main` are blocked by branch protection — everything goes through a PR.
+
+### Before You Push — Run ci-local.sh
+
+**Always run the local CI script before opening a PR**, especially after adding a new feature or fix:
+
+```bash
+./ci-local.sh          # check only
+./ci-local.sh --fix    # auto-fix ruff formatting issues
+```
+
+This script mirrors what GitHub Actions runs and catches broken tests, lint errors, type errors, and quality regressions before they reach CI. It is cheap to run locally and saves a broken CI round-trip.
+
+### What CI Runs on Every PR
+
+All four checks are **required** — a PR cannot merge if any of them fail.
+
+| Job | Tool | What it enforces |
+|-----|------|-----------------|
+| Ruff | `python -m ruff` | Formatting + lint (style, unused imports, modernization) |
+| Mypy | `python -m mypy` | Type correctness on `rikugan/core` and `rikugan/providers` |
+| Pytest | `python -m pytest` | All tests under `tests/` must pass |
+| Desloppify | `desloppify scan --profile objective` | Objective code quality score must not drop below baseline (90.3) |
+
+CI does **not** run `desloppify review` (the LLM-powered subjective scoring) — that is run manually before releases to control cost.
+
+### Release Flow
+
+1. Merge `dev` → `main` via PR (CI must pass)
+2. Bump `version` in `plugin.json`
+3. Push tag: `git tag v0.x.x && git push origin v0.x.x`
+4. GitHub Actions validates the tag matches `plugin.json`, then creates the GitHub Release
+5. Binary Ninja plugin manager auto-serves the new version from `main`
+
+### Workflow Files
+
+- `.github/workflows/ci.yml` — lint, typecheck, test, quality gate (triggers on PR to `dev`/`main`)
+- `.github/workflows/release.yml` — version validation + GitHub Release (triggers on `v*` tag)
+
 ## Development Standards
 
 ### Python Style

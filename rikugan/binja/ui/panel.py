@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ...ui.qt_compat import QVBoxLayout, QWidget
 from ...ui.panel_core import RikuganPanelCore
+from ...ui.qt_compat import QVBoxLayout, QWidget
 from .session_controller import BinaryNinjaSessionController
 
 
@@ -14,7 +14,7 @@ class RikuganPanel(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self._core = RikuganPanelCore(
+        self._core: RikuganPanelCore | None = RikuganPanelCore(
             controller_factory=BinaryNinjaSessionController,
             ui_hooks_factory=None,
             parent=self,
@@ -32,10 +32,14 @@ class RikuganPanel(QWidget):
             layout.addWidget(self)
 
     def prefill_input(self, text: str, auto_submit: bool = False) -> None:
-        self._core.prefill_input(text, auto_submit=auto_submit)
+        if self._core is not None:
+            self._core.prefill_input(text, auto_submit=auto_submit)
 
     def shutdown(self) -> None:
-        self._core.shutdown()
+        if self._core is not None:
+            self._core.shutdown()
+            self._core = None
 
     def on_database_changed(self, new_path: str) -> None:
-        self._core.on_database_changed(new_path)
+        if self._core is not None:
+            self._core.on_database_changed(new_path)

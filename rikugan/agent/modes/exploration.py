@@ -3,30 +3,43 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Generator, List, Optional
+from collections.abc import Generator
+from typing import TYPE_CHECKING
 
-from ...core.errors import CancellationError, ProviderError, ToolError
+from ...core.errors import ToolError
 from ...core.logging import log_error, log_info
-from ...core.types import Message, Role, ToolResult
+from ...core.types import (
+    Message,
+    Role,
+    UserDecision,
+    parse_approval,
+    parse_save_decision,
+)
 from ..exploration_mode import (
-    ExplorationPhase, ExplorationState, ModificationPlan, PatchSummary,
-    PlannedChange, EXPLORATION_SYSTEM_ADDENDUM, PLAN_SYNTHESIS_PROMPT,
     EXECUTE_STEP_PROMPT,
+    EXPLORATION_SYSTEM_ADDENDUM,
+    PLAN_SYNTHESIS_PROMPT,
+    ExplorationPhase,
+    ExplorationState,
+    ModificationPlan,
+    PatchSummary,
+    PlannedChange,
 )
 from ..plan_mode import parse_plan as _parse_plan_impl
 from ..subagent import SubagentRunner
 from ..turn import TurnEvent
+from .turn_helpers import execute_single_turn
 
 if TYPE_CHECKING:
     from ..loop import AgentLoop
 
 
-def _parse_plan(text: str) -> List[str]:
+def _parse_plan(text: str) -> list[str]:
     return _parse_plan_impl(text)
 
 
 def _run_phase1_subagent(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     state: ExplorationState,
     user_message: str,
     exploration_system: str,
@@ -60,16 +73,18 @@ def _run_phase1_subagent(
     # Inject summary into parent context (compact, not raw output)
     summary = kb.to_summary()
     if summary:
-        summary_msg = Message(role=Role.USER, content=(
-            "[SYSTEM] Subagent exploration complete. Summary:\n\n" + summary
-        ))
+        summary_msg = Message(
+            role=Role.USER,
+            content=("[SYSTEM] Subagent exploration complete. Summary:\n\n" + summary),
+        )
         loop.session.add_message(summary_msg)
 
     # Transition to plan if ready
     if kb.has_minimum_for_planning:
         state.transition_to(ExplorationPhase.PLAN)
         yield TurnEvent.exploration_phase_change(
-            "explore", "plan",
+            "explore",
+            "plan",
             "Subagent exploration complete. Moving to planning.",
         )
     else:
@@ -82,10 +97,10 @@ def _run_phase1_subagent(
 
 
 def _run_phase1_inline(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     state: ExplorationState,
     exploration_system: str,
-    tools_schema: List,
+    tools_schema: list,
     explore_only: bool,
 ) -> Generator[TurnEvent, None, None]:
     """Run exploration Phase 1 inline (in the parent's context)."""
@@ -98,7 +113,8 @@ def _run_phase1_inline(
             if state.knowledge_base.has_minimum_for_planning and not explore_only:
                 state.transition_to(ExplorationPhase.PLAN)
                 yield TurnEvent.exploration_phase_change(
-                    "explore", "plan",
+                    "explore",
+                    "plan",
                     f"Exploration turn limit reached ({state.max_explore_turns}). "
                     "Moving to planning with current findings.",
                 )
@@ -114,45 +130,24 @@ def _run_phase1_inline(
 
         yield TurnEvent.turn_start(state.total_turns)
 
-        try:
-            assistant_text, tool_calls, last_usage, raw_parts = yield from loop._stream_llm_turn(
-                exploration_system, tools_schema,
-            )
-        except CancellationError:
-            yield TurnEvent.cancelled_event()
-            loop._clear_exploration_state()
-            return
-        except ProviderError as e:
-            yield TurnEvent.error_event(loop._format_provider_error_for_user(e))
+        result = yield from execute_single_turn(loop, exploration_system, tools_schema)
+
+        if not result.ok:
             loop._clear_exploration_state()
             return
 
-        if assistant_text:
-            yield TurnEvent.text_done(assistant_text)
-
-        assistant_msg = Message(
-            role=Role.ASSISTANT, content=assistant_text,
-            tool_calls=tool_calls, token_usage=last_usage,
-        )
-        if raw_parts is not None:
-            assistant_msg._raw_parts = raw_parts
-        loop.session.add_message(assistant_msg)
-
-        if not tool_calls:
+        if not result.has_tool_calls:
             yield TurnEvent.turn_end(state.total_turns)
             if explore_only:
                 break
             if state.knowledge_base.has_minimum_for_planning:
                 state.transition_to(ExplorationPhase.PLAN)
                 yield TurnEvent.exploration_phase_change(
-                    "explore", "plan",
+                    "explore",
+                    "plan",
                     "Agent finished exploration. Moving to planning.",
                 )
             break
-
-        tool_results: List[ToolResult] = yield from loop._execute_tool_calls(tool_calls)
-        tool_msg = Message(role=Role.TOOL, tool_results=tool_results)
-        loop.session.add_message(tool_msg)
 
         loop._maybe_inject_error_hint()
 
@@ -160,11 +155,11 @@ def _run_phase1_inline(
 
 
 def _run_phase2_plan(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     state: ExplorationState,
     exploration_system: str,
     user_goal: str,
-) -> Generator[TurnEvent, None, Optional[List[str]]]:
+) -> Generator[TurnEvent, None, list[str] | None]:
     """Phase 2: synthesize a modification plan from gathered findings.
 
     Returns the parsed step list, or None if planning failed/was rejected.
@@ -173,23 +168,35 @@ def _run_phase2_plan(
     plan_prompt = PLAN_SYNTHESIS_PROMPT.format(knowledge_summary=knowledge_summary)
     loop.session.add_message(Message(role=Role.USER, content=plan_prompt))
 
-    state.total_turns += 1
-    yield TurnEvent.turn_start(state.total_turns)
-    try:
-        plan_text, _, usage, _ = yield from loop._stream_llm_turn(
-            exploration_system, None,  # text-only, no tools
-        )
-    except CancellationError:
-        yield TurnEvent.cancelled_event()
-        return None
-    except ProviderError as e:
-        yield TurnEvent.error_event(loop._format_provider_error_for_user(e))
-        return None
+    def _generate_plan_turn() -> Generator[TurnEvent, None, str | None]:
+        """Run one text-only plan generation turn."""
+        state.total_turns += 1
+        yield TurnEvent.turn_start(state.total_turns)
+        result = yield from execute_single_turn(loop, exploration_system, None)
+        yield TurnEvent.turn_end(state.total_turns)
+        if not result.ok:
+            return None
+        return result.text
 
-    if plan_text:
-        yield TurnEvent.text_done(plan_text)
-    loop.session.add_message(Message(role=Role.ASSISTANT, content=plan_text, token_usage=usage))
-    yield TurnEvent.turn_end(state.total_turns)
+    def _build_mod_plan(plan_text: str, steps: list[str]) -> None:
+        changes: list[PlannedChange] = []
+        for i, step in enumerate(steps):
+            addr_match = re.search(r"0x([0-9a-fA-F]+)", step)
+            addr = int(addr_match.group(1), 16) if addr_match else 0
+            changes.append(
+                PlannedChange(
+                    index=i,
+                    target_address=addr,
+                    current_behavior="",
+                    proposed_behavior=step,
+                    patch_strategy=step,
+                )
+            )
+        state.modification_plan = ModificationPlan(changes=changes, rationale=plan_text)
+
+    plan_text = yield from _generate_plan_turn()
+    if plan_text is None:
+        return None
 
     steps = _parse_plan(plan_text)
     if not steps:
@@ -199,21 +206,11 @@ def _run_phase2_plan(
         return None
 
     yield TurnEvent.plan_generated(steps)
-
-    # Build ModificationPlan from parsed steps
-    changes: List[PlannedChange] = []
-    for i, step in enumerate(steps):
-        addr_match = re.search(r"0x([0-9a-fA-F]+)", step)
-        addr = int(addr_match.group(1), 16) if addr_match else 0
-        changes.append(PlannedChange(
-            index=i, target_address=addr,
-            current_behavior="", proposed_behavior=step, patch_strategy=step,
-        ))
-    state.modification_plan = ModificationPlan(changes=changes, rationale=plan_text)
+    _build_mod_plan(plan_text, steps)
 
     # User approval gate
-    answer = loop._wait_for_queue(loop._user_answer_queue).strip().lower()
-    while answer not in ("approve", "1", "yes", "y"):
+    decision = parse_approval(loop._wait_for_queue(loop._user_answer_queue))
+    while decision.decision != UserDecision.APPROVE:
         loop._check_cancelled()
         yield TurnEvent.user_question(
             "Modification plan rejected. Would you like to regenerate it, or type feedback for a revised plan?",
@@ -221,69 +218,48 @@ def _run_phase2_plan(
             tool_call_id="plan_reject",
             allow_text=True,
         )
-        followup = loop._wait_for_queue(loop._user_answer_queue).strip()
-        if followup.lower() in ("cancel", "no", "n"):
+        decision = parse_approval(loop._wait_for_queue(loop._user_answer_queue))
+        if decision.decision == UserDecision.CANCEL:
             yield TurnEvent.error_event("Modification plan cancelled by user.")
             return None
-        # Treat anything else as guidance for a new plan attempt.
-        feedback = followup if followup.lower() != "regenerate" else ""
         regen_prompt = "The user rejected the previous modification plan."
-        if feedback:
-            regen_prompt += f" Their feedback: {feedback}"
+        if decision.feedback:
+            regen_prompt += f" Their feedback: {decision.feedback}"
         regen_prompt += "\n\nPlease generate a revised modification plan."
         plan_prompt = PLAN_SYNTHESIS_PROMPT.format(knowledge_summary=knowledge_summary)
-        loop.session.add_message(Message(role=Role.USER, content=regen_prompt + "\n\n" + plan_prompt))
+        loop.session.add_message(
+            Message(role=Role.USER, content=regen_prompt + "\n\n" + plan_prompt)
+        )
 
-        state.total_turns += 1
-        yield TurnEvent.turn_start(state.total_turns)
-        try:
-            plan_text, _, usage, _ = yield from loop._stream_llm_turn(
-                exploration_system, None,
-            )
-        except CancellationError:
-            yield TurnEvent.cancelled_event()
+        plan_text = yield from _generate_plan_turn()
+        if plan_text is None:
             return None
-        except ProviderError as e:
-            yield TurnEvent.error_event(loop._format_provider_error_for_user(e))
-            return None
-
-        if plan_text:
-            yield TurnEvent.text_done(plan_text)
-        loop.session.add_message(Message(role=Role.ASSISTANT, content=plan_text, token_usage=usage))
-        yield TurnEvent.turn_end(state.total_turns)
 
         steps = _parse_plan(plan_text)
         if not steps:
             yield TurnEvent.error_event("Failed to generate a valid modification plan.")
             return None
 
-        # Rebuild ModificationPlan
-        changes = []
-        for i, step in enumerate(steps):
-            addr_match = re.search(r"0x([0-9a-fA-F]+)", step)
-            addr = int(addr_match.group(1), 16) if addr_match else 0
-            changes.append(PlannedChange(
-                index=i, target_address=addr,
-                current_behavior="", proposed_behavior=step, patch_strategy=step,
-            ))
-        state.modification_plan = ModificationPlan(changes=changes, rationale=plan_text)
-
+        _build_mod_plan(plan_text, steps)
         yield TurnEvent.plan_generated(steps)
-        answer = loop._wait_for_queue(loop._user_answer_queue).strip().lower()
+        decision = parse_approval(loop._wait_for_queue(loop._user_answer_queue))
 
     state.transition_to(ExplorationPhase.EXECUTE)
-    yield TurnEvent.exploration_phase_change("plan", "execute", "Plan approved. Executing patches.")
+    yield TurnEvent.exploration_phase_change(
+        "plan", "execute", "Plan approved. Executing patches."
+    )
     from .plan import _persist_plan
+
     _persist_plan(loop, user_goal, steps)
     return steps
 
 
 def _run_phase3_execute(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     state: ExplorationState,
-    steps: List[str],
+    steps: list[str],
     exploration_system: str,
-    tools_schema: List,
+    tools_schema: list,
 ) -> Generator[TurnEvent, None, bool]:
     """Phase 3: execute each planned patch step. Returns True if completed."""
     for i, step_desc in enumerate(steps):
@@ -297,12 +273,16 @@ def _run_phase3_execute(
             return False
 
         yield TurnEvent.plan_step_start(i, step_desc)
-        loop.session.add_message(Message(
-            role=Role.USER,
-            content=EXECUTE_STEP_PROMPT.format(
-                index=i + 1, total=len(steps), description=step_desc,
-            ),
-        ))
+        loop.session.add_message(
+            Message(
+                role=Role.USER,
+                content=EXECUTE_STEP_PROMPT.format(
+                    index=i + 1,
+                    total=len(steps),
+                    description=step_desc,
+                ),
+            )
+        )
 
         # Mini agent loop for this step
         for _st in range(10):
@@ -310,33 +290,17 @@ def _run_phase3_execute(
             state.total_turns += 1
             yield TurnEvent.turn_start(state.total_turns)
 
-            try:
-                a_text, t_calls, t_usage, r_parts = yield from loop._stream_llm_turn(
-                    exploration_system, tools_schema,
-                )
-            except CancellationError:
-                yield TurnEvent.cancelled_event()
-                return False
-            except ProviderError as e:
-                yield TurnEvent.error_event(loop._format_provider_error_for_user(e))
-                return False
-
-            if a_text:
-                yield TurnEvent.text_done(a_text)
-            a_msg = Message(
-                role=Role.ASSISTANT, content=a_text,
-                tool_calls=t_calls, token_usage=t_usage,
+            result = yield from execute_single_turn(
+                loop, exploration_system, tools_schema
             )
-            if r_parts is not None:
-                a_msg._raw_parts = r_parts
-            loop.session.add_message(a_msg)
 
-            if not t_calls:
+            if not result.ok:
+                return False
+
+            if not result.has_tool_calls:
                 yield TurnEvent.turn_end(state.total_turns)
                 break
 
-            t_results: List[ToolResult] = yield from loop._execute_tool_calls(t_calls)
-            loop.session.add_message(Message(role=Role.TOOL, tool_results=t_results))
             yield TurnEvent.turn_end(state.total_turns)
 
         yield TurnEvent.plan_step_done(i, "completed")
@@ -344,12 +308,14 @@ def _run_phase3_execute(
 
 
 def _run_phase4_save(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     state: ExplorationState,
 ) -> Generator[TurnEvent, None, None]:
     """Phase 4: prompt the user to save or discard applied patches."""
     state.transition_to(ExplorationPhase.SAVE)
-    yield TurnEvent.exploration_phase_change("execute", "save", "All patches applied. Awaiting save decision.")
+    yield TurnEvent.exploration_phase_change(
+        "execute", "save", "All patches applied. Awaiting save decision."
+    )
 
     summary = PatchSummary(patches=list(state.patches_applied))
     summary.compute()
@@ -370,30 +336,40 @@ def _run_phase4_save(
         patches_detail=patches_detail,
     )
 
-    save_answer = loop._wait_for_queue(loop._user_answer_queue).strip().lower()
-    if save_answer in ("save all", "save", "1", "yes", "y"):
-        loop.session.add_message(Message(role=Role.USER, content=(
-            "[SYSTEM] Patches are saved in the analysis database. "
-            "To create a patched binary:\n"
-            "- **IDA Pro**: File → Produce file → Create patched file\n"
-            "- **Binary Ninja**: File → Save / Save As"
-        )))
-        yield TurnEvent.save_completed(len(state.patches_applied), summary.total_bytes_modified)
+    save_decision = parse_save_decision(loop._wait_for_queue(loop._user_answer_queue))
+    if save_decision.decision == UserDecision.SAVE:
+        loop.session.add_message(
+            Message(
+                role=Role.USER,
+                content=(
+                    "[SYSTEM] Patches are saved in the analysis database. "
+                    "To create a patched binary:\n"
+                    "- **IDA Pro**: File → Produce file → Create patched file\n"
+                    "- **Binary Ninja**: File → Save / Save As"
+                ),
+            )
+        )
+        yield TurnEvent.save_completed(
+            len(state.patches_applied), summary.total_bytes_modified
+        )
         log_info("Exploration mode: patches saved")
     else:
         rolled_back = False
         if state.patches_applied:
             rollback_parts = [
                 (
-                    f"import ida_bytes; ida_bytes.patch_bytes(0x{p.address:x}, {repr(bytes(p.original_bytes))})"
+                    f"import ida_bytes; ida_bytes.patch_bytes(0x{p.address:x}, {bytes(p.original_bytes)!r})"
                     if loop.host_name == "IDA Pro"
-                    else f"bv.write(0x{p.address:x}, {repr(bytes(p.original_bytes))})"
+                    else f"bv.write(0x{p.address:x}, {bytes(p.original_bytes)!r})"
                 )
-                for p in reversed(state.patches_applied) if p.original_bytes
+                for p in reversed(state.patches_applied)
+                if p.original_bytes
             ]
             if rollback_parts:
                 try:
-                    loop.tools.execute("execute_python", {"code": "; ".join(rollback_parts)})
+                    loop.tools.execute(
+                        "execute_python", {"code": "; ".join(rollback_parts)}
+                    )
                     rolled_back = True
                     log_info("Exploration mode: patches rolled back via execute_python")
                 except ToolError as e:
@@ -403,18 +379,20 @@ def _run_phase4_save(
             "[SYSTEM] Patches discarded. Original bytes have been restored."
             if rolled_back
             else "[SYSTEM] Patches discarded. The in-memory changes persist "
-                 "until the analysis database is reloaded without saving."
+            "until the analysis database is reloaded without saving."
         )
         loop.session.add_message(Message(role=Role.USER, content=discard_msg))
         yield TurnEvent.save_discarded(len(state.patches_applied), rolled_back)
-        log_info(f"Exploration mode: patches discarded by user (rolled_back={rolled_back})")
+        log_info(
+            f"Exploration mode: patches discarded by user (rolled_back={rolled_back})"
+        )
 
 
 def run_exploration_mode(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     user_message: str,
     system_prompt: str,
-    tools_schema: List,
+    tools_schema: list,
     explore_only: bool = False,
 ) -> Generator[TurnEvent, None, None]:
     """Run the agent in exploration mode: explore -> plan -> patch -> save."""
@@ -424,28 +402,42 @@ def run_exploration_mode(
     loop._exploration_state = state
 
     exploration_system = system_prompt + EXPLORATION_SYSTEM_ADDENDUM
-    log_info(f"Exploration mode started: goal={user_message[:80]!r}, explore_only={explore_only}")
-    yield TurnEvent.exploration_phase_change("", "explore", f"Starting exploration: {user_message[:60]}")
+    log_info(
+        f"Exploration mode started: goal={user_message[:80]!r}, explore_only={explore_only}"
+    )
+    yield TurnEvent.exploration_phase_change(
+        "", "explore", f"Starting exploration: {user_message[:60]}"
+    )
 
     # Phase 1: EXPLORE — subagent for /modify, inline for /explore
     if not explore_only:
         yield from _run_phase1_subagent(loop, state, user_message, exploration_system)
     else:
-        yield from _run_phase1_inline(loop, state, exploration_system, tools_schema, explore_only)
+        yield from _run_phase1_inline(
+            loop, state, exploration_system, tools_schema, explore_only
+        )
 
     if explore_only:
         summary = state.knowledge_base.to_summary()
         if summary:
-            loop.session.add_message(Message(role=Role.USER, content=(
-                "[SYSTEM] Exploration complete. Here is a summary of findings:\n\n" + summary
-            )))
+            loop.session.add_message(
+                Message(
+                    role=Role.USER,
+                    content=(
+                        "[SYSTEM] Exploration complete. Here is a summary of findings:\n\n"
+                        + summary
+                    ),
+                )
+            )
         log_info("Exploration mode finished (explore-only)")
         loop._clear_exploration_state()
         return
 
     # Phase 2: PLAN
     if state.phase == ExplorationPhase.PLAN:
-        steps = yield from _run_phase2_plan(loop, state, exploration_system, user_message)
+        steps = yield from _run_phase2_plan(
+            loop, state, exploration_system, user_message
+        )
         if steps is None:
             loop._clear_exploration_state()
             return
@@ -455,7 +447,11 @@ def run_exploration_mode(
     # Phase 3: EXECUTE
     if state.phase == ExplorationPhase.EXECUTE:
         ok = yield from _run_phase3_execute(
-            loop, state, steps, exploration_system, tools_schema,
+            loop,
+            state,
+            steps,
+            exploration_system,
+            tools_schema,
         )
         if not ok:
             loop._clear_exploration_state()

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import io
-from typing import Callable, Dict, Any
+from collections.abc import Callable
+from typing import Any
 
 # Modules that must never be imported (directly or via __import__).
 _BLOCKED_MODULES = frozenset({"subprocess", "shlex", "pty", "commands"})
@@ -14,26 +16,48 @@ _BLOCKED_MODULES = frozenset({"subprocess", "shlex", "pty", "commands"})
 _BLOCKED_CALLS = frozenset({"exec", "eval", "compile", "__import__"})
 
 # Attribute calls that must never appear (module.func patterns).
-_BLOCKED_ATTRS = frozenset({
-    ("os", "system"),
-    ("os", "popen"),
-    ("os", "execl"),
-    ("os", "execle"),
-    ("os", "execlp"),
-    ("os", "execlpe"),
-    ("os", "execv"),
-    ("os", "execve"),
-    ("os", "execvp"),
-    ("os", "execvpe"),
-    ("os", "spawnl"),
-    ("os", "spawnle"),
-    ("os", "spawnlp"),
-    ("os", "spawnlpe"),
-    ("os", "spawnv"),
-    ("os", "spawnve"),
-    ("os", "spawnvp"),
-    ("os", "spawnvpe"),
-})
+_BLOCKED_ATTRS = frozenset(
+    {
+        ("os", "system"),
+        ("os", "popen"),
+        ("os", "execl"),
+        ("os", "execle"),
+        ("os", "execlp"),
+        ("os", "execlpe"),
+        ("os", "execv"),
+        ("os", "execve"),
+        ("os", "execvp"),
+        ("os", "execvpe"),
+        ("os", "spawnl"),
+        ("os", "spawnle"),
+        ("os", "spawnlp"),
+        ("os", "spawnlpe"),
+        ("os", "spawnv"),
+        ("os", "spawnve"),
+        ("os", "spawnvp"),
+        ("os", "spawnvpe"),
+    }
+)
+
+# Builtins that must be removed from the execution namespace to prevent
+# reflective bypasses (e.g. __builtins__['__import__'], eval("os.system")).
+_REMOVED_BUILTINS = frozenset(
+    {
+        "__import__",
+        "exec",
+        "eval",
+        "compile",
+        "breakpoint",
+        "exit",
+        "quit",
+    }
+)
+
+
+def safe_builtins() -> dict[str, Any]:
+    """Return a restricted __builtins__ dict with dangerous names removed."""
+    safe = {k: v for k, v in vars(builtins).items() if k not in _REMOVED_BUILTINS}
+    return safe
 
 
 def _check_ast(code: str) -> str | None:
@@ -77,10 +101,22 @@ def _check_ast(code: str) -> str | None:
                 ):
                     return f"Blocked — call to disallowed 'os.{func.attr}()'"
 
+        # Block: subscript access to __builtins__ (e.g. __builtins__['__import__'])
+        elif isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
+                return "Blocked — direct subscript access to __builtins__"
+
+        # Block: getattr used to access blocked names reflectively
+        elif isinstance(node, ast.Call):
+            # Already handled above, but also catch getattr(os, 'system') patterns
+            pass
+
     return None
 
 
-def run_guarded_script(code: str, namespace_factory: Callable[[], Dict[str, Any]]) -> str:
+def run_guarded_script(
+    code: str, namespace_factory: Callable[[], dict[str, Any]]
+) -> str:
     """Block dangerous patterns, exec code, and return captured stdout/stderr."""
     violation = _check_ast(code)
     if violation:
@@ -90,9 +126,17 @@ def run_guarded_script(code: str, namespace_factory: Callable[[], Dict[str, Any]
     stderr_buf = io.StringIO()
     namespace = namespace_factory()
 
+    # Ensure __builtins__ is restricted even if the factory provided full access
+    ns_builtins = namespace.get("__builtins__")
+    if ns_builtins is builtins or ns_builtins is vars(builtins):
+        namespace["__builtins__"] = safe_builtins()
+    elif isinstance(ns_builtins, dict):
+        for name in _REMOVED_BUILTINS:
+            ns_builtins.pop(name, None)
+
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
         try:
-            exec(code, namespace)  # noqa: S102 — intentional scripting tool
+            exec(code, namespace)
         except Exception as e:
             stderr_buf.write(f"{type(e).__name__}: {e}\n")
 

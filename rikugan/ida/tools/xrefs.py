@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import importlib
-from typing import Annotated, Iterable
+from collections.abc import Iterable
+from typing import Annotated
 
-from .base import parse_addr, tool
+from ...tools.base import parse_addr, tool
 
 
-def format_callers_callees(fname: str, start: int, callers: Iterable[str], callees: Iterable[str]) -> str:
+def format_callers_callees(
+    fname: str, start: int, callers: Iterable[str], callees: Iterable[str]
+) -> str:
     """Format a function callers/callees summary (shared between IDA and BN xref tools)."""
     callers = sorted(callers)
     callees = sorted(callees)
@@ -22,32 +25,37 @@ def format_callers_callees(fname: str, start: int, callers: Iterable[str], calle
     return "\n".join(parts)
 
 
-ida_funcs = ida_name = ida_xref = idautils = None  # populated below when IDA is available
+ida_funcs = ida_name = ida_xref = idautils = (
+    None  # populated below when IDA is available
+)
 try:
     ida_funcs = importlib.import_module("ida_funcs")
     ida_name = importlib.import_module("ida_name")
     ida_xref = importlib.import_module("ida_xref")
     idautils = importlib.import_module("idautils")
 except ImportError:
-    ida_funcs = ida_name = ida_xref = idautils = None  # IDA not present — tools unavailable in non-IDA context
+    ida_funcs = ida_name = ida_xref = idautils = (
+        None  # IDA not present — tools unavailable in non-IDA context
+    )
 
 
 # Xref type constants → human-readable names.
 # Covers code-ref (fl_*) and data-ref (dr_*) types from ida_xref.
 _XREF_TYPE_MAP = {
-    0:  "Data_Unknown",
-    1:  "dr_O",         # offset
-    2:  "dr_W",         # write
-    3:  "dr_R",         # read
-    4:  "dr_T",         # text/informational
-    5:  "dr_I",         # informational
-    16: "fl_CF",        # call far
-    17: "fl_CN",        # call near
-    18: "fl_JF",        # jump far
-    19: "fl_JN",        # jump near
-    20: "fl_US",        # user-specified
-    21: "fl_F",         # ordinary flow
+    0: "Data_Unknown",
+    1: "dr_O",  # offset
+    2: "dr_W",  # write
+    3: "dr_R",  # read
+    4: "dr_T",  # text/informational
+    5: "dr_I",  # informational
+    16: "fl_CF",  # call far
+    17: "fl_CN",  # call near
+    18: "fl_JF",  # jump far
+    19: "fl_JN",  # jump near
+    20: "fl_US",  # user-specified
+    21: "fl_F",  # ordinary flow
 }
+
 
 def _xref_type_name(xtype: int) -> str:
     """Get a readable name for an xref type, with fallback."""
@@ -63,7 +71,11 @@ def xrefs_to(
 
     ea = parse_addr(address)
     target_name = ida_name.get_name(ea)
-    lines = [f"Cross-references to 0x{ea:x}" + (f" ({target_name})" if target_name else "") + ":"]
+    lines = [
+        f"Cross-references to 0x{ea:x}"
+        + (f" ({target_name})" if target_name else "")
+        + ":"
+    ]
 
     count = 0
     for xref in idautils.XrefsTo(ea, 0):

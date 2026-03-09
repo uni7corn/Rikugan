@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from tests.mocks.ida_mock import install_ida_mocks
 install_ida_mocks()
 
-from rikugan.tools.microcode_format import (
+from rikugan.ida.tools.microcode_format import (
     _MATURITY_NAMES, _MATURITY_LEVELS,
     parse_maturity, maturity_label, require_hexrays,
 )
@@ -71,7 +71,7 @@ class TestMaturityLabel(unittest.TestCase):
 
 class TestRequireHexrays(unittest.TestCase):
     def test_raises_when_no_hexrays(self):
-        import rikugan.tools.microcode_format as mod
+        import rikugan.ida.tools.microcode_format as mod
         orig = mod._HAS_HEXRAYS
         try:
             mod._HAS_HEXRAYS = False

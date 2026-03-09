@@ -9,8 +9,8 @@ from rikugan.binja.ui.actions import (
     ACTION_DEFS,
     build_context,
     handle_annotate,
-    handle_clean_mcode,
-    handle_deobfuscate,
+    handle_clean_il,
+    handle_deobfuscate_bn,
     handle_explain,
     handle_rename,
     handle_send_to,
@@ -133,15 +133,15 @@ class TestHandleRename(unittest.TestCase):
 # handle_deobfuscate
 # ---------------------------------------------------------------------------
 
-class TestHandleDeobfuscate(unittest.TestCase):
+class TestHandleDeobfuscateBn(unittest.TestCase):
     def test_includes_obfuscation_patterns(self):
         ctx = {"func_name": "fn", "func_ea": 0x1000, "ea": 0x1000}
-        result = handle_deobfuscate(ctx)
+        result = handle_deobfuscate_bn(ctx)
         self.assertIn("obfuscat", result.lower())
 
     def test_mentions_il_optimizations(self):
         ctx = {"func_name": "fn", "func_ea": 0x1000, "ea": 0x1000}
-        result = handle_deobfuscate(ctx)
+        result = handle_deobfuscate_bn(ctx)
         self.assertIn("IL", result)
 
 
@@ -188,10 +188,10 @@ class TestHandleAnnotate(unittest.TestCase):
 # handle_clean_mcode
 # ---------------------------------------------------------------------------
 
-class TestHandleCleanMcode(unittest.TestCase):
+class TestHandleCleanIl(unittest.TestCase):
     def test_mentions_il(self):
         ctx = {"func_name": "fn", "func_ea": 0x1000, "ea": 0x1000}
-        result = handle_clean_mcode(ctx)
+        result = handle_clean_il(ctx)
         self.assertIn("IL", result)
 
 

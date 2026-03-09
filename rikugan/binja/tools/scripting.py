@@ -7,8 +7,8 @@ from typing import Annotated
 
 from ...core.logging import log_debug
 from ...tools.base import tool
-from ...tools.script_guard import run_guarded_script
-from .common import current_ea_or_default, require_bv
+from ...tools.script_guard import run_guarded_script, safe_builtins
+from .compat import current_ea_or_default, require_bv
 
 _BN_MODULE_NAMES = (
     "binaryninja",
@@ -30,7 +30,7 @@ def _get_base_namespace() -> dict:
         _cached_namespace = ns
 
     bv = require_bv()
-    result: dict = {"__builtins__": __builtins__}
+    result: dict = {"__builtins__": safe_builtins()}
     result.update(_cached_namespace)
     result["bv"] = bv
     result["current_address"] = current_ea_or_default(0)
@@ -39,7 +39,9 @@ def _get_base_namespace() -> dict:
 
 @tool(category="scripting", mutating=True)
 def execute_python(
-    code: Annotated[str, "Python code to execute in Binary Ninja's scripting environment"],
+    code: Annotated[
+        str, "Python code to execute in Binary Ninja's scripting environment"
+    ],
 ) -> str:
     """Execute arbitrary Python code in Binary Ninja context and return stdout/stderr.
 

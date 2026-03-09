@@ -14,11 +14,19 @@ class ConfigError(RikuganError):
 class ProviderError(RikuganError):
     """LLM provider errors."""
 
-    def __init__(self, message: str, provider: str = "", status_code: int = 0, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        provider: str = "",
+        status_code: int = 0,
+        retryable: bool = False,
+        retry_after: float = 0,
+    ):
         super().__init__(message)
         self.provider = provider
         self.status_code = status_code
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class AuthenticationError(ProviderError):
@@ -31,7 +39,12 @@ class AuthenticationError(ProviderError):
 class RateLimitError(ProviderError):
     """Rate limit exceeded."""
 
-    def __init__(self, message: str = "Rate limit exceeded", provider: str = "", retry_after: float = 0):
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        provider: str = "",
+        retry_after: float = 0,
+    ):
         super().__init__(message, provider=provider, status_code=429, retryable=True)
         self.retry_after = retry_after
 

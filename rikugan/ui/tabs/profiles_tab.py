@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
-from ..qt_compat import (
-    QCheckBox, QComboBox, QGroupBox, QHBoxLayout, QLabel,
-    QPlainTextEdit, QPushButton, QVBoxLayout, QWidget, QLineEdit,
-    QFormLayout, QMessageBox, QListWidget, QListWidgetItem,
-    QSplitter, QFrame, QScrollArea, Qt, QSizePolicy,
-)
 from ...core.config import RikuganConfig
 from ...core.logging import log_debug
 from ...core.profile import (
-    AnalysisProfile, DEFAULT_PROFILE, IOC_FILTER_CATEGORIES,
-    PRIVATE_PROFILE, _BUILTIN_PROFILES, get_profile, list_profiles,
+    _BUILTIN_PROFILES,
+    IOC_FILTER_CATEGORIES,
+    AnalysisProfile,
+    get_profile,
+    list_profiles,
 )
+from ..qt_compat import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+if TYPE_CHECKING:
+    from ..settings_service import SettingsService
 
 _BTN_STYLE = (
     "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
@@ -32,28 +49,16 @@ _GROUP_STYLE = (
 )
 
 
-def _get_tools_by_category(tool_registry) -> Dict[str, List[str]]:
-    """Extract tool names grouped by category from a live ToolRegistry."""
-    by_cat: Dict[str, List[str]] = {}
-    if tool_registry is None:
-        return by_cat
-    for defn in tool_registry.list_tools():
-        cat = (defn.category or "general").capitalize()
-        by_cat.setdefault(cat, []).append(defn.name)
-    # Sort tool names within each category
-    for cat in by_cat:
-        by_cat[cat].sort()
-    return by_cat
-
-
 class ProfilesTab(QWidget):
     """Tab for managing analysis profiles."""
 
-    def __init__(self, config: RikuganConfig, tool_registry=None, parent: QWidget = None):
+    def __init__(
+        self, config: RikuganConfig, service: SettingsService, parent: QWidget = None
+    ):
         super().__init__(parent)
         self._config = config
-        self._tool_registry = tool_registry
-        self._custom_profiles: Dict[str, Dict] = copy.deepcopy(config.custom_profiles)
+        self._service = service
+        self._custom_profiles: dict[str, dict] = copy.deepcopy(config.custom_profiles)
         self._displayed_profile: str = ""  # tracks which profile the UI fields show
         self._build_ui()
         self._load_profile(self._profile_combo.currentText())
@@ -67,7 +72,31 @@ class ProfilesTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        # --- Profile selector + action buttons row ---
+        outer.addLayout(self._build_profile_selector())
+
+        # Scrollable content area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(6)
+
+        layout.addWidget(self._build_description_section())
+        self._hide_metadata_cb = QCheckBox("Hide binary metadata")
+        layout.addWidget(self._hide_metadata_cb)
+        layout.addWidget(self._build_ioc_filters_section())
+        layout.addWidget(self._build_custom_rules_section())
+        layout.addWidget(self._build_denied_tools_section())
+        layout.addWidget(self._build_advanced_section())
+        layout.addStretch()
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+    def _build_profile_selector(self) -> QHBoxLayout:
+        """Build the profile selector row with combo box and action buttons."""
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("Active Profile:"))
         self._profile_combo = QComboBox()
@@ -90,18 +119,10 @@ class ProfilesTab(QWidget):
         self._delete_btn.clicked.connect(self._on_delete_profile)
         top_row.addWidget(self._delete_btn)
 
-        outer.addLayout(top_row)
+        return top_row
 
-        # --- Scrollable content area ---
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(6)
-
-        # ---- Description ----
+    def _build_description_section(self) -> QGroupBox:
+        """Build the description group box."""
         desc_group = QGroupBox("Description")
         desc_group.setStyleSheet(_GROUP_STYLE)
         desc_lay = QVBoxLayout(desc_group)
@@ -118,13 +139,10 @@ class ProfilesTab(QWidget):
             "or reference external threat intelligence')."
         )
         desc_lay.addWidget(self._desc_edit)
-        layout.addWidget(desc_group)
+        return desc_group
 
-        # ---- Behavior checkbox ----
-        self._hide_metadata_cb = QCheckBox("Hide binary metadata")
-        layout.addWidget(self._hide_metadata_cb)
-
-        # ---- IOC Redaction Filters ----
+    def _build_ioc_filters_section(self) -> QGroupBox:
+        """Build the IOC redaction filters group with select/deselect and checkbox grid."""
         ioc_group = QGroupBox("IOC Redaction Filters")
         ioc_group.setStyleSheet(_GROUP_STYLE)
         ioc_outer = QVBoxLayout(ioc_group)
@@ -146,7 +164,7 @@ class ProfilesTab(QWidget):
         ioc_outer.addLayout(ioc_btns)
 
         # Two-column checkbox grid
-        self._ioc_checkboxes: Dict[str, QCheckBox] = {}
+        self._ioc_checkboxes: dict[str, QCheckBox] = {}
         keys = list(IOC_FILTER_CATEGORIES.keys())
         mid = (len(keys) + 1) // 2
         ioc_grid = QHBoxLayout()
@@ -161,9 +179,11 @@ class ProfilesTab(QWidget):
             col.addStretch()
             ioc_grid.addLayout(col)
         ioc_outer.addLayout(ioc_grid)
-        layout.addWidget(ioc_group)
 
-        # ---- Custom Filter Rules ----
+        return ioc_group
+
+    def _build_custom_rules_section(self) -> QGroupBox:
+        """Build the custom filter rules group with input fields and rules list."""
         rules_group = QGroupBox("Custom Filter Rules")
         rules_group.setStyleSheet(_GROUP_STYLE)
         rules_lay = QVBoxLayout(rules_group)
@@ -190,7 +210,9 @@ class ProfilesTab(QWidget):
         self._rule_type_combo.setFixedWidth(80)
         row2.addWidget(self._rule_type_combo)
         self._rule_replacement_edit = QLineEdit()
-        self._rule_replacement_edit.setPlaceholderText("Replacement (default: [CUSTOM_REDACTED])")
+        self._rule_replacement_edit.setPlaceholderText(
+            "Replacement (default: [CUSTOM_REDACTED])"
+        )
         row2.addWidget(self._rule_replacement_edit, 1)
         self._add_rule_btn = QPushButton("+ Add")
         self._add_rule_btn.setStyleSheet(_BTN_STYLE)
@@ -212,17 +234,19 @@ class ProfilesTab(QWidget):
         self._remove_rule_btn.clicked.connect(self._on_remove_rule)
         list_row.addWidget(self._remove_rule_btn)
         rules_lay.addLayout(list_row)
-        layout.addWidget(rules_group)
 
-        # ---- Denied Tools (dynamic from tool registry) ----
+        return rules_group
+
+    def _build_denied_tools_section(self) -> QGroupBox:
+        """Build the denied tools group with category checkboxes or text fallback."""
         tools_group = QGroupBox("Denied Tools")
         tools_group.setStyleSheet(_GROUP_STYLE)
         tools_lay = QVBoxLayout(tools_group)
         tools_lay.setContentsMargins(10, 20, 10, 8)
         tools_lay.setSpacing(4)
 
-        self._denied_tool_cbs: Dict[str, QCheckBox] = {}
-        tools_by_cat = _get_tools_by_category(self._tool_registry)
+        self._denied_tool_cbs: dict[str, QCheckBox] = {}
+        tools_by_cat = self._service.tools_by_category
 
         if tools_by_cat:
             tools_scroll = QScrollArea()
@@ -237,7 +261,7 @@ class ProfilesTab(QWidget):
             # Distribute categories across 3 columns
             categories = list(tools_by_cat.items())
             n_cols = 3
-            cols: List[QVBoxLayout] = []
+            cols: list[QVBoxLayout] = []
             for _ in range(n_cols):
                 c = QVBoxLayout()
                 c.setSpacing(2)
@@ -271,9 +295,10 @@ class ProfilesTab(QWidget):
             )
             tools_lay.addWidget(self._denied_tools_edit)
 
-        layout.addWidget(tools_group)
+        return tools_group
 
-        # ---- Advanced ----
+    def _build_advanced_section(self) -> QGroupBox:
+        """Build the advanced settings group with denied functions and prompt filters."""
         adv_group = QGroupBox("Advanced")
         adv_group.setStyleSheet(_GROUP_STYLE)
         adv_form = QFormLayout(adv_group)
@@ -282,19 +307,19 @@ class ProfilesTab(QWidget):
 
         self._denied_funcs_edit = QPlainTextEdit()
         self._denied_funcs_edit.setMaximumHeight(48)
-        self._denied_funcs_edit.setPlaceholderText("One function name per line (binary-specific)")
+        self._denied_funcs_edit.setPlaceholderText(
+            "One function name per line (binary-specific)"
+        )
         adv_form.addRow("Denied Functions:", self._denied_funcs_edit)
 
         self._custom_filters_edit = QPlainTextEdit()
         self._custom_filters_edit.setMaximumHeight(48)
-        self._custom_filters_edit.setPlaceholderText("Custom prompt instructions (one per line)")
+        self._custom_filters_edit.setPlaceholderText(
+            "Custom prompt instructions (one per line)"
+        )
         adv_form.addRow("Prompt Filters:", self._custom_filters_edit)
 
-        layout.addWidget(adv_group)
-        layout.addStretch()
-
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
+        return adv_group
 
     # ------------------------------------------------------------------
     # IOC select/deselect helpers
@@ -375,7 +400,7 @@ class ProfilesTab(QWidget):
         self._ioc_select_all_btn.setEnabled(not is_builtin)
         self._ioc_deselect_btn.setEnabled(not is_builtin)
 
-    def _get_denied_tools(self) -> List[str]:
+    def _get_denied_tools(self) -> list[str]:
         """Read denied tools from checkboxes or text fallback."""
         if self._denied_tool_cbs:
             return [tn for tn, cb in self._denied_tool_cbs.items() if cb.isChecked()]
@@ -383,7 +408,7 @@ class ProfilesTab(QWidget):
             return _text_to_lines(self._denied_tools_edit.toPlainText())
         return []
 
-    def _get_current_rules(self) -> List[Dict[str, Any]]:
+    def _get_current_rules(self) -> list[dict[str, Any]]:
         name = self._displayed_profile
         if not name:
             return []
@@ -421,9 +446,11 @@ class ProfilesTab(QWidget):
         is_regex = self._rule_type_combo.currentText() == "Regex"
         replacement = self._rule_replacement_edit.text().strip() or "[CUSTOM_REDACTED]"
 
-        rule: Dict[str, Any] = {
-            "name": rule_name, "pattern": pattern,
-            "is_regex": is_regex, "replacement": replacement,
+        rule: dict[str, Any] = {
+            "name": rule_name,
+            "pattern": pattern,
+            "is_regex": is_regex,
+            "replacement": replacement,
         }
 
         name = self._profile_combo.currentText()
@@ -511,7 +538,9 @@ class ProfilesTab(QWidget):
         if not name or name in _BUILTIN_PROFILES:
             return
         reply = QMessageBox.question(
-            self, "Delete Profile", f"Delete profile '{name}'?",
+            self,
+            "Delete Profile",
+            f"Delete profile '{name}'?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -519,7 +548,7 @@ class ProfilesTab(QWidget):
         self._custom_profiles.pop(name, None)
         self._populate_combo()
 
-    def _prompt_new_profile(self, title: str) -> Optional[tuple]:
+    def _prompt_new_profile(self, title: str) -> tuple | None:
         """Prompt for name + description. Returns (name, description) or None."""
         from ..qt_compat import QDialog, QDialogButtonBox
 
@@ -559,7 +588,9 @@ class ProfilesTab(QWidget):
                 error_label.show()
                 return
             if not d:
-                error_label.setText("Description is required \u2014 it helps the AI agent follow your constraints")
+                error_label.setText(
+                    "Description is required \u2014 it helps the AI agent follow your constraints"
+                )
                 error_label.show()
                 return
             name_edit.setText(n)
@@ -583,10 +614,12 @@ class ProfilesTab(QWidget):
         self._save_current_to_working_copy()
         config.active_profile = self._profile_combo.currentText() or "default"
         config.custom_profiles = copy.deepcopy(self._custom_profiles)
-        log_debug(f"Profiles config: active={config.active_profile}, "
-                  f"{len(config.custom_profiles)} custom")
+        log_debug(
+            f"Profiles config: active={config.active_profile}, "
+            f"{len(config.custom_profiles)} custom"
+        )
 
 
-def _text_to_lines(text: str) -> List[str]:
+def _text_to_lines(text: str) -> list[str]:
     """Split multiline text into non-empty stripped lines."""
     return [line.strip() for line in text.splitlines() if line.strip()]

@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import functools
 import inspect
-import json
-import typing
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, get_type_hints
-
 import traceback
+import typing
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, get_type_hints
 
-from ..core.errors import ToolError, ToolValidationError
-from ..core.logging import log_error as _log_error, log_trace
-from ..core.thread_safety import idasync
+from ..core.errors import ToolError
+from ..core.logging import log_error as _log_error
+from ..core.logging import log_trace
 
 
 def parse_addr(value: Any) -> int:
@@ -41,28 +40,28 @@ class ParameterSchema:
     description: str = ""
     required: bool = True
     default: Any = None
-    enum: Optional[List[Any]] = None
-    items: Optional[Dict[str, Any]] = None
+    enum: list[Any] | None = None
+    items: dict[str, Any] | None = None
 
 
 @dataclass
 class ToolDefinition:
     name: str
     description: str
-    parameters: List[ParameterSchema] = field(default_factory=list)
+    parameters: list[ParameterSchema] = field(default_factory=list)
     category: str = "general"
     requires_decompiler: bool = False
     mutating: bool = False
-    timeout: Optional[float] = None  # per-tool timeout in seconds (None = use default)
-    handler: Optional[Callable] = field(default=None, repr=False)
-    requires: List[str] = field(default_factory=list)
+    timeout: float | None = None  # per-tool timeout in seconds (None = use default)
+    handler: Callable | None = field(default=None, repr=False)
+    requires: list[str] = field(default_factory=list)
 
-    def to_json_schema(self) -> Dict[str, Any]:
-        properties: Dict[str, Any] = {}
-        required: List[str] = []
+    def to_json_schema(self) -> dict[str, Any]:
+        properties: dict[str, Any] = {}
+        required: list[str] = []
 
         for param in self.parameters:
-            prop: Dict[str, Any] = {"type": param.type}
+            prop: dict[str, Any] = {"type": param.type}
             if param.description:
                 prop["description"] = param.description
             if param.enum:
@@ -73,7 +72,7 @@ class ToolDefinition:
             if param.required:
                 required.append(param.name)
 
-        schema: Dict[str, Any] = {
+        schema: dict[str, Any] = {
             "type": "object",
             "properties": properties,
         }
@@ -81,7 +80,7 @@ class ToolDefinition:
             schema["required"] = required
         return schema
 
-    def to_provider_format(self) -> Dict[str, Any]:
+    def to_provider_format(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
@@ -92,9 +91,9 @@ class ToolDefinition:
         }
 
 
-def _extract_annotation_metadata(annotation: Any) -> Dict[str, Any]:
+def _extract_annotation_metadata(annotation: Any) -> dict[str, Any]:
     """Extract description, enum, etc. from typing.Annotated metadata."""
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
     if hasattr(annotation, "__metadata__"):
         for m in annotation.__metadata__:
             if isinstance(m, str):
@@ -118,12 +117,12 @@ def _resolve_type(annotation: Any) -> tuple:
 
     # Handle Optional
     if origin is typing.Union and len(args) == 2 and type(None) in args:
-        inner = args[0] if args[1] is type(None) else args[1]
+        inner = args[0] if args[1] is type(None) else args[1]  # type: ignore[misc]
         json_type, extra, _ = _resolve_type(inner)
         return json_type, extra, inner
 
     # Handle List
-    if origin in (list, typing.List if hasattr(typing, "List") else list):
+    if origin is list:
         items = {}
         if args:
             inner_type, _, _ = _resolve_type(args[0])
@@ -131,7 +130,7 @@ def _resolve_type(annotation: Any) -> tuple:
         return "array", {"items": items} if items else {}, list
 
     # Handle Dict
-    if origin in (dict, typing.Dict if hasattr(typing, "Dict") else dict):
+    if origin is dict:
         return "object", {}, dict
 
     # Primitives
@@ -139,11 +138,11 @@ def _resolve_type(annotation: Any) -> tuple:
     return json_type, {}, annotation
 
 
-def _build_parameters(func: Callable) -> List[ParameterSchema]:
+def _build_parameters(func: Callable) -> list[ParameterSchema]:
     """Build parameter schemas from function signature and type hints."""
     sig = inspect.signature(func)
     hints = get_type_hints(func, include_extras=True)
-    params: List[ParameterSchema] = []
+    params: list[ParameterSchema] = []
 
     for name, param in sig.parameters.items():
         if name in ("self", "cls"):
@@ -153,19 +152,18 @@ def _build_parameters(func: Callable) -> List[ParameterSchema]:
 
         # Extract Annotated metadata — use typing.get_origin() because
         # on Python 3.14 Annotated[X, ...].__origin__ is X, not Annotated.
-        meta: Dict[str, Any] = {}
+        meta: dict[str, Any] = {}
         if typing.get_origin(annotation) is typing.Annotated:
             meta = _extract_annotation_metadata(annotation)
         annotation_for_type = annotation
 
-        json_type, extra, base_type = _resolve_type(annotation_for_type)
+        json_type, extra, _base_type = _resolve_type(annotation_for_type)
 
         # Determine required and default
         has_default = param.default is not inspect.Parameter.empty
-        is_optional = (
-            getattr(annotation, "__origin__", None) is typing.Union
-            and type(None) in getattr(annotation, "__args__", ())
-        )
+        is_optional = getattr(annotation, "__origin__", None) is typing.Union and type(
+            None
+        ) in getattr(annotation, "__args__", ())
 
         ps = ParameterSchema(
             name=name,
@@ -182,13 +180,13 @@ def _build_parameters(func: Callable) -> List[ParameterSchema]:
 
 
 def tool(
-    name: Optional[str] = None,
-    description: Optional[str] = None,
+    name: str | None = None,
+    description: str | None = None,
     category: str = "general",
     requires_decompiler: bool = False,
     mutating: bool = False,
-    timeout: Optional[float] = None,
-    requires: Optional[List[str]] = None,
+    timeout: float | None = None,
+    requires: list[str] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to register a function as an agent tool.
 
@@ -199,6 +197,7 @@ def tool(
             '''Decompile the function at the given address.'''
             ...
     """
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         tool_name = name or func.__name__
         tool_desc = description or (func.__doc__ or "").strip().split("\n")[0]
@@ -221,16 +220,11 @@ def tool(
             requires=effective_requires,
         )
 
-        # All tools call IDA APIs, which must run on the main thread.
-        # Wrap with idasync so background agent threads are marshalled
-        # through execute_sync automatically.
-        safe_func = idasync(func)
-
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             log_trace(f"tool:{tool_name} CALL args={kwargs}")
             try:
-                result = safe_func(*args, **kwargs)
+                result = func(*args, **kwargs)
                 log_trace(f"tool:{tool_name} OK result_len={len(str(result))}")
                 return result
             except ToolError:

@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generator, List
+from collections.abc import Generator
+from typing import TYPE_CHECKING
 
-from ...core.errors import CancellationError, ProviderError
-from ...core.logging import log_debug, log_error
-from ...core.types import Message, Role, ToolResult
+from ...core.logging import log_debug
 from ..turn import TurnEvent
+from .turn_helpers import execute_single_turn
 
 if TYPE_CHECKING:
     from ..loop import AgentLoop
 
 
 def run_normal_loop(
-    loop: "AgentLoop",
+    loop: AgentLoop,
     system_prompt: str,
     tools_schema: list,
 ) -> Generator[TurnEvent, None, None]:
@@ -35,40 +35,19 @@ def run_normal_loop(
         turn_tools = None if loop._tools_disabled_for_turn else tools_schema
         loop._tools_disabled_for_turn = False
 
-        try:
-            assistant_text, tool_calls, last_usage, raw_parts = yield from loop._stream_llm_turn(
-                system_prompt, turn_tools,
-            )
-        except CancellationError:
-            yield TurnEvent.cancelled_event()
-            return
-        except ProviderError as e:
-            log_error(f"Provider error: {e}")
-            yield TurnEvent.error_event(loop._format_provider_error_for_user(e))
+        result = yield from execute_single_turn(loop, system_prompt, turn_tools)
+
+        if not result.ok:
             return
 
-        if assistant_text:
-            yield TurnEvent.text_done(assistant_text)
-
-        assistant_msg = Message(
-            role=Role.ASSISTANT, content=assistant_text,
-            tool_calls=tool_calls, token_usage=last_usage,
-        )
-        if raw_parts is not None:
-            assistant_msg._raw_parts = raw_parts
-        loop.session.add_message(assistant_msg)
-
-        if not tool_calls:
+        if not result.has_tool_calls:
             loop._consecutive_errors = 0
             log_debug(f"Turn {turn} end (final)")
             yield TurnEvent.turn_end(turn)
             break
 
-        tool_results: List[ToolResult] = yield from loop._execute_tool_calls(tool_calls)
-        loop.session.add_message(Message(role=Role.TOOL, tool_results=tool_results))
-
         # Consecutive error recovery: hint at 3, disable tools at 5
         loop._maybe_inject_error_hint()
 
-        log_debug(f"Turn {turn} end ({len(tool_calls)} tool calls)")
+        log_debug(f"Turn {turn} end ({len(result.tool_calls)} tool calls)")
         yield TurnEvent.turn_end(turn)

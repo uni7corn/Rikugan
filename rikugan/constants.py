@@ -1,10 +1,10 @@
-"""Global constants for Rikugan."""
+"""Global constants for Rikugan.
+
+This module is data-only — no runtime detection or host probing.
+For host capability flags see ``rikugan.core.host``.
+"""
 
 from __future__ import annotations
-
-import importlib
-
-from .core.host import is_binary_ninja, is_ida
 
 PLUGIN_NAME = "Rikugan"
 PLUGIN_VERSION = "0.1.0"
@@ -29,17 +29,3 @@ SKILLS_DIR_NAME = "skills"
 MCP_CONFIG_FILE = "mcp.json"
 MCP_TOOL_PREFIX = "mcp_"
 MCP_DEFAULT_TIMEOUT = 30.0
-
-# Runtime host flags
-IDA_AVAILABLE = is_ida()
-BINARY_NINJA_AVAILABLE = is_binary_ninja()
-
-# Whether the Hex-Rays decompiler SDK is importable.
-if IDA_AVAILABLE:
-    try:
-        importlib.import_module("ida_hexrays")
-        HAS_HEXRAYS = True
-    except ImportError:
-        HAS_HEXRAYS = False
-else:
-    HAS_HEXRAYS = False
