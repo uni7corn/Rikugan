@@ -1,0 +1,368 @@
+"""Agent tree view and spawn dialog for the Agents tab."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .qt_compat import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    Qt,
+    QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+)
+
+_STATUS_COLORS: dict[str, str] = {
+    "PENDING": "#808080",
+    "RUNNING": "#dcdcaa",
+    "COMPLETED": "#4ec9b0",
+    "FAILED": "#f44747",
+    "CANCELLED": "#808080",
+}
+
+_BTN_STYLE = (
+    "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+    "border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+    "QPushButton:hover { background: #3c3c3c; }"
+    "QPushButton:disabled { color: #555; }"
+)
+
+_DIALOG_STYLE = """
+    QDialog {
+        background: #1e1e1e;
+        color: #d4d4d4;
+    }
+    QLabel {
+        color: #d4d4d4;
+        font-size: 11px;
+    }
+    QComboBox, QSpinBox, QTextEdit {
+        background: #2d2d2d;
+        color: #d4d4d4;
+        border: 1px solid #3c3c3c;
+        border-radius: 3px;
+        padding: 3px;
+        font-size: 11px;
+    }
+    QGroupBox {
+        color: #d4d4d4;
+        border: 1px solid #3c3c3c;
+        border-radius: 4px;
+        margin-top: 8px;
+        padding-top: 14px;
+        font-size: 11px;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 8px;
+        padding: 0 4px;
+    }
+    QCheckBox {
+        color: #d4d4d4;
+        font-size: 11px;
+        spacing: 6px;
+    }
+    QCheckBox::indicator {
+        width: 14px;
+        height: 14px;
+    }
+"""
+
+_TREE_STYLE = """
+    QTreeWidget {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        border: 1px solid #3c3c3c;
+        font-size: 11px;
+        alternate-background-color: #252525;
+    }
+    QTreeWidget::item {
+        padding: 2px 4px;
+    }
+    QTreeWidget::item:selected {
+        background: #2d2d2d;
+    }
+    QHeaderView::section {
+        background: #2d2d2d;
+        color: #d4d4d4;
+        border: 1px solid #3c3c3c;
+        padding: 3px 6px;
+        font-size: 10px;
+    }
+"""
+
+# Perk definitions: (key, display_label)
+_PERK_DEFS: list[tuple[str, str]] = [
+    ("deep_decompilation", "Deep decompilation"),
+    ("string_harvesting", "String harvesting"),
+    ("import_mapping", "Import mapping"),
+    ("memory_layout", "Memory layout"),
+    ("hypothesis_mode", "Hypothesis mode"),
+]
+
+# Agent type presets: which perks to auto-check
+_TYPE_PRESETS: dict[str, list[str]] = {
+    "Network Reconstructor": ["import_mapping", "string_harvesting", "deep_decompilation"],
+    "Report Writer": [],
+    "Custom Task": [],
+}
+
+
+@dataclass
+class AgentInfo:
+    """Snapshot of an agent's state for display."""
+
+    agent_id: str
+    name: str
+    agent_type: str
+    status: str = "PENDING"
+    turns: int = 0
+    elapsed_seconds: float = 0.0
+    summary: str = ""
+
+
+class SpawnAgentDialog(QDialog):
+    """Dialog for configuring and launching a new sub-agent."""
+
+    def __init__(self, parent: QWidget = None):
+        super().__init__(parent)
+        self.setWindowTitle("Spawn Agent")
+        self.setMinimumWidth(420)
+        self.setStyleSheet(_DIALOG_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        # Agent type
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(["Custom Task", "Network Reconstructor", "Report Writer"])
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
+        form.addRow("Agent Type:", self._type_combo)
+
+        # Task / goal
+        self._task_edit = QTextEdit()
+        self._task_edit.setPlaceholderText("Describe the task or goal for this agent...")
+        self._task_edit.setFixedHeight(80)
+        form.addRow("Task / Goal:", self._task_edit)
+
+        layout.addLayout(form)
+
+        # Perks group
+        perks_group = QGroupBox("Perks")
+        perks_layout = QVBoxLayout(perks_group)
+        perks_layout.setSpacing(4)
+
+        self._perk_checks: dict[str, QCheckBox] = {}
+        for key, label in _PERK_DEFS:
+            cb = QCheckBox(label)
+            cb.setObjectName(f"perk_{key}")
+            self._perk_checks[key] = cb
+            perks_layout.addWidget(cb)
+
+        layout.addWidget(perks_group)
+
+        # Max turns
+        turns_layout = QFormLayout()
+        self._turns_spin = QSpinBox()
+        self._turns_spin.setRange(1, 100)
+        self._turns_spin.setValue(20)
+        turns_layout.addRow("Max turns:", self._turns_spin)
+        layout.addLayout(turns_layout)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Launch")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_type_changed(self, agent_type: str) -> None:
+        """Apply perk presets based on agent type."""
+        preset = _TYPE_PRESETS.get(agent_type, [])
+        for key, cb in self._perk_checks.items():
+            cb.setChecked(key in preset)
+
+    @property
+    def agent_type(self) -> str:
+        return self._type_combo.currentText()
+
+    @property
+    def task(self) -> str:
+        return self._task_edit.toPlainText().strip()
+
+    @property
+    def perks(self) -> list[str]:
+        return [key for key, cb in self._perk_checks.items() if cb.isChecked()]
+
+    @property
+    def max_turns(self) -> int:
+        return self._turns_spin.value()
+
+
+class AgentTreeWidget(QWidget):
+    """Tree-based view of running and completed sub-agents."""
+
+    spawn_requested = Signal(dict)  # {"name", "task", "agent_type", "perks", "max_turns"}
+    cancel_requested = Signal(str)  # agent_id
+    inject_summary_requested = Signal(str)  # agent_id
+
+    def __init__(self, parent: QWidget = None):
+        super().__init__(parent)
+        self.setObjectName("agent_tree_widget")
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(4)
+
+        self._new_btn = QPushButton("+ New Agent")
+        self._new_btn.setStyleSheet(_BTN_STYLE)
+        self._new_btn.clicked.connect(self._on_new_agent)
+        toolbar.addWidget(self._new_btn)
+
+        self._kill_btn = QPushButton("Kill Selected")
+        self._kill_btn.setStyleSheet(_BTN_STYLE)
+        self._kill_btn.clicked.connect(self._on_kill_selected)
+        toolbar.addWidget(self._kill_btn)
+
+        toolbar.addStretch()
+
+        self._status_label = QLabel("0 running / 0 completed")
+        self._status_label.setStyleSheet("color: #808080; font-size: 11px;")
+        toolbar.addWidget(self._status_label)
+
+        main_layout.addLayout(toolbar)
+
+        # Tree widget
+        self._tree = QTreeWidget()
+        self._tree.setObjectName("agent_tree")
+        self._tree.setStyleSheet(_TREE_STYLE)
+        self._tree.setHeaderLabels(["Name", "Type", "Status", "Turns", "Time"])
+        self._tree.setColumnWidth(0, 150)
+        self._tree.setColumnWidth(1, 100)
+        self._tree.setColumnWidth(2, 80)
+        self._tree.setColumnWidth(3, 50)
+        self._tree.setColumnWidth(4, 60)
+        self._tree.setAlternatingRowColors(True)
+        self._tree.setRootIsDecorated(False)
+        self._tree.itemSelectionChanged.connect(self._on_item_selected)
+        main_layout.addWidget(self._tree)
+
+        # Output preview
+        self._preview = QTextEdit()
+        self._preview.setObjectName("agent_preview")
+        self._preview.setReadOnly(True)
+        self._preview.setFixedHeight(80)
+        self._preview.setStyleSheet(
+            "QTextEdit { background: #252525; color: #d4d4d4; border: 1px solid #3c3c3c; "
+            "font-size: 11px; padding: 4px; }"
+        )
+        self._preview.setPlaceholderText("Select an agent to preview its output...")
+        main_layout.addWidget(self._preview)
+
+        # Internal agent tracking: agent_id -> AgentInfo
+        self._agents: dict[str, AgentInfo] = {}
+        # Map agent_id -> QTreeWidgetItem
+        self._items: dict[str, QTreeWidgetItem] = {}
+
+    def _on_new_agent(self) -> None:
+        """Open the spawn dialog and emit spawn_requested if accepted."""
+        dlg = SpawnAgentDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            if not dlg.task:
+                return
+            agent_count = len(self._agents) + 1
+            name = f"agent-{agent_count}"
+            self.spawn_requested.emit(
+                {
+                    "name": name,
+                    "task": dlg.task,
+                    "agent_type": dlg.agent_type,
+                    "perks": dlg.perks,
+                    "max_turns": dlg.max_turns,
+                }
+            )
+
+    def _on_kill_selected(self) -> None:
+        """Cancel the currently selected agent."""
+        items = self._tree.selectedItems()
+        if not items:
+            return
+        agent_id = items[0].data(0, Qt.ItemDataRole.UserRole)
+        if agent_id:
+            self.cancel_requested.emit(agent_id)
+
+    def update_agent(self, info: AgentInfo) -> None:
+        """Add or update a tree item for the given agent."""
+        self._agents[info.agent_id] = info
+
+        if info.agent_id in self._items:
+            item = self._items[info.agent_id]
+        else:
+            item = QTreeWidgetItem(self._tree)
+            item.setData(0, Qt.ItemDataRole.UserRole, info.agent_id)
+            self._items[info.agent_id] = item
+
+        item.setText(0, info.name)
+        item.setText(1, info.agent_type)
+        item.setText(2, info.status)
+        item.setText(3, str(info.turns))
+        item.setText(4, self._format_elapsed(info.elapsed_seconds))
+
+        # Status color
+        color = _STATUS_COLORS.get(info.status, "#d4d4d4")
+        from .qt_compat import QColor
+
+        item.setForeground(2, QColor(color))
+
+        self._update_status_counts()
+
+        # Auto-update preview if this agent is selected
+        selected = self._tree.selectedItems()
+        if selected and selected[0].data(0, Qt.ItemDataRole.UserRole) == info.agent_id:
+            self._preview.setPlainText(info.summary or "(no output yet)")
+
+    def _on_item_selected(self) -> None:
+        """Show the summary of the selected agent in the preview pane."""
+        items = self._tree.selectedItems()
+        if not items:
+            self._preview.clear()
+            return
+        agent_id = items[0].data(0, Qt.ItemDataRole.UserRole)
+        info = self._agents.get(agent_id)
+        if info:
+            self._preview.setPlainText(info.summary or "(no output yet)")
+        else:
+            self._preview.clear()
+
+    def _update_status_counts(self) -> None:
+        """Refresh the running / completed counts label."""
+        running = sum(1 for a in self._agents.values() if a.status == "RUNNING")
+        completed = sum(1 for a in self._agents.values() if a.status == "COMPLETED")
+        self._status_label.setText(f"{running} running / {completed} completed")
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        """Format elapsed seconds as m:ss."""
+        mins = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{mins}:{secs:02d}"

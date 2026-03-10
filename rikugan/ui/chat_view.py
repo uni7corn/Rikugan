@@ -13,6 +13,7 @@ from .message_widgets import (
     ExplorationFindingWidget,
     ExplorationPhaseWidget,
     QueuedMessageWidget,
+    SubagentEventWidget,
     ThinkingWidget,
     UserMessageWidget,
     UserQuestionWidget,
@@ -224,6 +225,12 @@ class ChatView(QScrollArea):
             TurnEventType.SAVE_APPROVAL_REQUEST,
         ):
             self._handle_question_event(event)
+        elif etype in (
+            TurnEventType.SUBAGENT_SPAWNED,
+            TurnEventType.SUBAGENT_COMPLETED,
+            TurnEventType.SUBAGENT_FAILED,
+        ):
+            self._handle_subagent_event(event)
         elif etype == TurnEventType.ERROR:
             self._hide_thinking()
             self._reset_tool_run()
@@ -352,6 +359,24 @@ class ChatView(QScrollArea):
                     meta.get("relevance", "medium"),
                 )
             )
+        self._scroll_to_bottom()
+
+    def _handle_subagent_event(self, event: TurnEvent) -> None:
+        meta = event.metadata
+        if event.type == TurnEventType.SUBAGENT_SPAWNED:
+            name = event.text
+            agent_type = meta.get("agent_type", "custom")
+            self._insert_widget(SubagentEventWidget("spawned", name, f"type: {agent_type}"))
+        elif event.type == TurnEventType.SUBAGENT_COMPLETED:
+            name = meta.get("name", "")
+            turns = meta.get("turn_count", 0)
+            elapsed = meta.get("elapsed", 0.0)
+            detail = f"{turns} turns, {elapsed:.0f}s"
+            self._insert_widget(SubagentEventWidget("completed", name, detail))
+        elif event.type == TurnEventType.SUBAGENT_FAILED:
+            name = meta.get("name", "")
+            error = event.error or "Unknown error"
+            self._insert_widget(SubagentEventWidget("failed", name, error))
         self._scroll_to_bottom()
 
     def _handle_question_event(self, event: TurnEvent) -> None:

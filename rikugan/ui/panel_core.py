@@ -41,6 +41,7 @@ from .qt_compat import (
 from .settings_dialog import SettingsDialog
 from .styles import DARK_THEME
 from .tool_widgets import _SharedSpinnerTimer
+from .tools_panel import ToolsPanel
 
 _TOOL_RESULT_TRUNCATE_CHARS = 2000
 _SMALL_BTN_STYLE = (
@@ -354,8 +355,14 @@ class RikuganPanelCore(QWidget):
         self._mutation_panel.undo_requested.connect(self._on_undo_requested)
         self._mutation_panel.setVisible(False)
         self._main_splitter.addWidget(self._mutation_panel)
+
+        self._tools_panel = ToolsPanel()
+        self._tools_panel.setVisible(False)
+        self._main_splitter.addWidget(self._tools_panel)
+
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 1)
+        self._main_splitter.setStretchFactor(2, 1)
 
         layout.addWidget(self._main_splitter, 1)
 
@@ -414,6 +421,13 @@ class RikuganPanelCore(QWidget):
         self._mutations_btn.clicked.connect(self._on_toggle_mutation_log)
         self._mutations_btn.setVisible(False)  # shown when first mutation is recorded
         btn_layout.addWidget(self._mutations_btn)
+
+        self._tools_btn = QPushButton("Tools")
+        self._tools_btn.setFixedWidth(64)
+        self._tools_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._tools_btn.setCheckable(True)
+        self._tools_btn.clicked.connect(self._on_toggle_tools)
+        btn_layout.addWidget(self._tools_btn)
 
         btn_layout.addStretch()
         return btn_layout
@@ -988,6 +1002,281 @@ class RikuganPanelCore(QWidget):
         visible = not self._mutation_panel.isVisible()
         self._mutation_panel.setVisible(visible)
         self._mutations_btn.setChecked(visible)
+
+    def _on_toggle_tools(self) -> None:
+        """Toggle visibility of the tools panel."""
+        if self._tools_panel is None:
+            return
+        visible = not self._tools_panel.isVisible()
+        self._tools_panel.setVisible(visible)
+        self._tools_btn.setChecked(visible)
+        if visible:
+            self._ensure_tools_initialized()
+
+    def _ensure_tools_initialized(self) -> None:
+        """Lazily initialize tools panel contents on first open."""
+        if getattr(self, "_tools_initialized", False):
+            return
+        self._tools_initialized = True
+
+        from .a2a_widget import A2ABridgeWidget
+        from .agent_tree import AgentTreeWidget
+        from .bulk_renamer import BulkRenamerWidget
+
+        # Agent tree
+        self._agent_tree = AgentTreeWidget()
+        self._agent_tree.spawn_requested.connect(self._on_spawn_agent)
+        self._agent_tree.cancel_requested.connect(self._on_cancel_agent)
+        self._agent_tree.inject_summary_requested.connect(self._on_inject_summary)
+        self._tools_panel.set_agents_widget(self._agent_tree)
+
+        # Bulk renamer
+        self._bulk_renamer = BulkRenamerWidget()
+        self._bulk_renamer.start_requested.connect(self._on_renamer_start)
+        self._bulk_renamer.pause_requested.connect(self._on_renamer_pause)
+        self._bulk_renamer.cancel_requested.connect(self._on_renamer_cancel)
+        self._bulk_renamer.undo_requested.connect(self._on_renamer_undo)
+        self._tools_panel.set_renamer_widget(self._bulk_renamer)
+
+        # A2A bridge
+        self._a2a_widget = A2ABridgeWidget()
+        self._a2a_widget.task_requested.connect(self._on_a2a_task)
+        self._a2a_widget.inject_result_requested.connect(self._on_a2a_inject)
+        self._tools_panel.set_a2a_widget(self._a2a_widget)
+
+        # Discover external agents in background
+        self._discover_external_agents()
+
+        # Start tools polling timer
+        self._tools_poll_timer = QTimer(self)
+        self._tools_poll_timer.setInterval(100)
+        self._tools_poll_timer.timeout.connect(self._poll_tools_events)
+        self._tools_poll_timer.start()
+
+    def _get_or_create_subagent_manager(self):
+        """Lazily create the SubagentManager."""
+        if hasattr(self, "_subagent_manager"):
+            return self._subagent_manager
+
+        from ..agent.subagent_manager import SubagentManager
+
+        provider = self._ctrl.get_provider()
+        if provider is None:
+            return None
+        self._subagent_manager = SubagentManager(
+            provider=provider,
+            tool_registry=self._ctrl.get_tool_registry(),
+            config=self._config,
+            host_name=self._ctrl.host_name,
+            skill_registry=getattr(self._ctrl, "_skill_registry", None),
+        )
+        return self._subagent_manager
+
+    def _get_or_create_renamer_engine(self, mode, batch_size, max_concurrent):
+        """Create a BulkRenamerEngine for the current session."""
+        from ..agent.bulk_renamer import BulkRenamerEngine
+
+        provider = self._ctrl.get_provider()
+        if provider is None:
+            return None
+        return BulkRenamerEngine(
+            provider=provider,
+            tool_registry=self._ctrl.get_tool_registry(),
+            config=self._config,
+            host_name=self._ctrl.host_name,
+            skill_registry=getattr(self._ctrl, "_skill_registry", None),
+            mode=mode,
+            batch_size=batch_size,
+            max_concurrent=max_concurrent,
+        )
+
+    def _get_or_create_subprocess_bridge(self):
+        """Lazily create the SubprocessBridge."""
+        if hasattr(self, "_subprocess_bridge"):
+            return self._subprocess_bridge
+        from ..agent.a2a.subprocess_bridge import SubprocessBridge
+
+        self._subprocess_bridge = SubprocessBridge()
+        return self._subprocess_bridge
+
+    def _discover_external_agents(self) -> None:
+        """Discover external agents and populate the A2A widget."""
+        from ..agent.a2a.registry import ExternalAgentRegistry
+
+        registry = ExternalAgentRegistry(self._config)
+        agents = registry.discover()
+        if hasattr(self, "_a2a_widget"):
+            agent_dicts = [{"name": a.name, "transport": a.transport, "endpoint": a.endpoint} for a in agents]
+            self._a2a_widget.set_agents(agent_dicts)
+        self._external_registry = registry
+
+    # --- Tools panel event handlers ---
+
+    def _on_spawn_agent(self, params: dict) -> None:
+        """Handle agent spawn request from AgentTreeWidget."""
+        mgr = self._get_or_create_subagent_manager()
+        if mgr is None:
+            return
+        mgr.spawn(
+            name=params.get("name", "Custom Agent"),
+            task=params.get("task", ""),
+            agent_type=params.get("agent_type", "custom"),
+            perks=params.get("perks", []),
+            max_turns=params.get("max_turns", 20),
+        )
+
+    def _on_cancel_agent(self, agent_id: str) -> None:
+        """Handle agent cancel request from AgentTreeWidget."""
+        mgr = self._get_or_create_subagent_manager()
+        if mgr is not None:
+            mgr.cancel(agent_id)
+
+    def _on_inject_summary(self, agent_id: str) -> None:
+        """Inject a completed agent's summary into the active chat."""
+        mgr = self._get_or_create_subagent_manager()
+        if mgr is None:
+            return
+        info = mgr.get(agent_id)
+        if info is None or not info.summary:
+            return
+        elapsed = (info.completed_at or info.created_at) - info.created_at
+        text = (
+            f"[Subagent \u201c{info.name}\u201d completed ({info.turn_count} turns, {elapsed:.0f}s)]\n\n{info.summary}"
+        )
+        self._start_agent(text)
+
+    def _on_renamer_start(self, jobs, mode, batch_size, max_concurrent) -> None:
+        """Handle bulk renamer start request."""
+        from ..agent.bulk_renamer import RenameJob
+
+        engine = self._get_or_create_renamer_engine(mode, batch_size, max_concurrent)
+        if engine is None:
+            return
+        rename_jobs = [RenameJob(address=j["address"], current_name=j["current_name"]) for j in jobs]
+        engine.enqueue(rename_jobs)
+        self._renamer_engine = engine
+        engine.start()
+
+    def _on_renamer_pause(self) -> None:
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            if engine._pause_event.is_set():
+                engine.pause()
+            else:
+                engine.resume()
+
+    def _on_renamer_cancel(self) -> None:
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            engine.cancel()
+
+    def _on_renamer_undo(self) -> None:
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            engine.undo_all()
+
+    def _on_a2a_task(self, agent_name: str, task: str, include_context: bool) -> None:
+        """Handle A2A task delegation request."""
+        registry = getattr(self, "_external_registry", None)
+        if registry is None:
+            return
+        agent_config = registry.get(agent_name)
+        if agent_config is None:
+            return
+        bridge = self._get_or_create_subprocess_bridge()
+        context = ""
+        if include_context:
+            session = self._ctrl.session
+            if session and session.messages:
+                # Compact summary of recent messages
+                parts = []
+                for msg in session.messages[-10:]:
+                    if msg.content:
+                        parts.append(f"[{msg.role.value}] {msg.content[:200]}")
+                context = "Context from current analysis:\n" + "\n".join(parts)
+        task_id = bridge.run_task(agent_config, task, context_summary=context)
+        if hasattr(self, "_a2a_widget"):
+            self._a2a_widget.add_task_entry(agent_name, task, task_id)
+
+    def _on_a2a_inject(self, result_text: str) -> None:
+        """Inject A2A task result into the active chat."""
+        if result_text:
+            self._start_agent(result_text)
+
+    def _poll_tools_events(self) -> None:
+        """Poll all tools subsystems for events."""
+        if self._is_shutdown:
+            return
+
+        # Poll subagent manager events
+        mgr = getattr(self, "_subagent_manager", None)
+        if mgr is not None:
+            for _ in range(10):
+                event = mgr.poll_event()
+                if event is None:
+                    break
+                # Update agent tree
+                if hasattr(self, "_agent_tree"):
+                    meta = event.metadata
+                    agent_id = meta.get("agent_id", "")
+                    info = mgr.get(agent_id)
+                    if info is not None:
+                        self._agent_tree.update_agent(
+                            {
+                                "id": info.id,
+                                "name": info.name,
+                                "agent_type": info.agent_type,
+                                "status": info.status.value,
+                                "turn_count": info.turn_count,
+                                "created_at": info.created_at,
+                                "completed_at": info.completed_at,
+                                "summary": info.summary,
+                            }
+                        )
+                # Also show in chat for spawned/completed/failed
+                if event.type in (
+                    TurnEventType.SUBAGENT_SPAWNED,
+                    TurnEventType.SUBAGENT_COMPLETED,
+                    TurnEventType.SUBAGENT_FAILED,
+                ):
+                    chat_view = self._active_chat_view()
+                    if chat_view is not None:
+                        chat_view.handle_event(event)
+
+        # Poll bulk renamer events
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            for _ in range(20):
+                rename_event = engine.poll_event()
+                if rename_event is None:
+                    break
+                if hasattr(self, "_bulk_renamer"):
+                    job = rename_event.job
+                    if job is not None:
+                        self._bulk_renamer.update_job(
+                            job.address,
+                            job.new_name,
+                            job.status,
+                            job.error,
+                        )
+                    self._bulk_renamer.set_progress(
+                        rename_event.progress,
+                        rename_event.total,
+                    )
+
+        # Poll A2A subprocess bridge events
+        bridge = getattr(self, "_subprocess_bridge", None)
+        if bridge is not None:
+            for _ in range(10):
+                a2a_event = bridge.poll_event()
+                if a2a_event is None:
+                    break
+                if hasattr(self, "_a2a_widget") and a2a_event.task is not None:
+                    self._a2a_widget.update_task_status(
+                        a2a_event.task.id,
+                        a2a_event.task.status.value,
+                        a2a_event.task.result,
+                    )
 
     def _on_undo_requested(self, count: int) -> None:
         """Handle undo request from the mutation log panel."""

@@ -510,6 +510,49 @@ class ExplorationFindingWidget(QFrame):
             layout.addWidget(rel_label)
 
 
+class SubagentEventWidget(QFrame):
+    """Displays a subagent lifecycle event (spawned, completed, failed)."""
+
+    _STATUS_COLORS: ClassVar[dict[str, str]] = {
+        "spawned": "#569cd6",
+        "completed": "#4ec9b0",
+        "failed": "#f44747",
+    }
+
+    def __init__(
+        self,
+        status: str,
+        name: str,
+        detail: str = "",
+        parent: QWidget = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("message_tool")
+        color = self._STATUS_COLORS.get(status, "#808080")
+        self.setStyleSheet(f"QFrame#message_tool {{ border-color: {color}; background: #252530; }}")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
+        icon_map = {"spawned": "\u25b6", "completed": "\u2714", "failed": "\u2718"}
+        icon = icon_map.get(status, "\u2022")
+        self._icon = QLabel(icon)
+        self._icon.setStyleSheet(f"color: {color}; font-size: 14px;")
+        layout.addWidget(self._icon)
+
+        label_text = f"Subagent \u201c{name}\u201d {status}"
+        self._label = QLabel(label_text)
+        self._label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
+        layout.addWidget(self._label)
+
+        if detail:
+            self._detail = QLabel(detail)
+            self._detail.setWordWrap(True)
+            self._detail.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+            layout.addWidget(self._detail, 1)
+
+
 class ErrorMessageWidget(QFrame):
     """Displays an error message."""
 
