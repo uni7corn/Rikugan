@@ -611,7 +611,12 @@ class SettingsDialog(QDialog):
         model_id = self._get_selected_model_id()
         for m in self._fetched_models:
             if m.id == model_id:
-                self._context_spin.setValue(m.context_window)
+                # Only apply model defaults when the user selected a
+                # different model.  If the model matches the saved config,
+                # the user may have intentionally customized context_window
+                # — don't overwrite it with the model's default.
+                if model_id != self._config.provider.model:
+                    self._context_spin.setValue(m.context_window)
                 self._max_tokens_spin.setValue(min(m.max_output_tokens, 16384))
                 break
 
