@@ -229,7 +229,7 @@ class TestAgentLoop(unittest.TestCase):
         loop = self._make_loop(provider)
         self.assertFalse(loop.is_running)
 
-        events = list(loop.run("Hi"))
+        list(loop.run("Hi"))  # consume generator
         self.assertFalse(loop.is_running)
 
     def test_usage_tracked(self):

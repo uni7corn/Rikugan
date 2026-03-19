@@ -422,9 +422,9 @@ def run_research_mode(
         if not tracker.is_continuing("explore"):
             yield TurnEvent.exploration_phase_change("", "explore", f"Starting research: {user_message[:60]}")
 
-        from .exploration import _run_phase1_inline
+        from .exploration import run_phase1_inline
 
-        yield from _run_phase1_inline(loop, explore_state, research_system, explore_tools, explore_only=True)
+        yield from run_phase1_inline(loop, explore_state, research_system, explore_tools, explore_only=True)
 
         # Merge exploration KB into research state
         research_state.knowledge_base = explore_state.knowledge_base

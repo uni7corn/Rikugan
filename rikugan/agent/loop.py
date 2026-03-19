@@ -110,7 +110,7 @@ def _parse_user_command(user_message: str) -> _ParsedCommand:
     return _ParsedCommand(message=stripped)
 
 
-def _append_to_memory_file(md_path: str, content: str) -> None:
+def append_to_memory_file(md_path: str, content: str) -> None:
     """Create RIKUGAN.md with header if missing, then append *content*."""
     if not os.path.exists(md_path):
         with open(md_path, "w", encoding="utf-8") as f:
@@ -1155,7 +1155,7 @@ class AgentLoop:
             else:
                 md_path = os.path.join(idb_dir, "RIKUGAN.md")
                 try:
-                    _append_to_memory_file(md_path, f"- [{category}] {fact}\n")
+                    append_to_memory_file(md_path, f"- [{category}] {fact}\n")
                     content = f"Saved to RIKUGAN.md: [{category}] {fact}"
                     is_err = False
                     log_info(f"save_memory: [{category}] {fact[:80]}")

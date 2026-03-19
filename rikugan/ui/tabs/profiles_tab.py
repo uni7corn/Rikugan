@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from ...core.config import RikuganConfig
 from ...core.logging import log_debug
 from ...core.profile import (
-    _BUILTIN_PROFILES,
+    BUILTIN_PROFILES,
     IOC_FILTER_CATEGORIES,
     AnalysisProfile,
     get_profile,
@@ -346,7 +346,7 @@ class ProfilesTab(QWidget):
     def _load_profile(self, name: str) -> None:
         self._displayed_profile = name
         profile = get_profile(name, self._custom_profiles)
-        is_builtin = name in _BUILTIN_PROFILES
+        is_builtin = name in BUILTIN_PROFILES
 
         self._desc_edit.setPlainText(profile.description or "")
         self._hide_metadata_cb.setChecked(profile.hide_binary_metadata)
@@ -407,7 +407,7 @@ class ProfilesTab(QWidget):
 
     def _save_current_to_working_copy(self) -> None:
         name = self._displayed_profile
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
 
         ioc_filters = {key: cb.isChecked() for key, cb in self._ioc_checkboxes.items()}
@@ -444,7 +444,7 @@ class ProfilesTab(QWidget):
         }
 
         name = self._profile_combo.currentText()
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
 
         profile_data = self._custom_profiles.get(name, {})
@@ -465,7 +465,7 @@ class ProfilesTab(QWidget):
         if row < 0:
             return
         name = self._profile_combo.currentText()
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
         profile_data = self._custom_profiles.get(name, {})
         rules = list(profile_data.get("custom_filter_rules", []))
@@ -484,7 +484,7 @@ class ProfilesTab(QWidget):
         if not result:
             return
         name, desc = result
-        if name in _BUILTIN_PROFILES or name in self._custom_profiles:
+        if name in BUILTIN_PROFILES or name in self._custom_profiles:
             QMessageBox.warning(self, "Error", f"Profile '{name}' already exists.")
             return
         p = AnalysisProfile(name=name, description=desc)
@@ -502,7 +502,7 @@ class ProfilesTab(QWidget):
         if not result:
             return
         name, desc = result
-        if name in _BUILTIN_PROFILES or name in self._custom_profiles:
+        if name in BUILTIN_PROFILES or name in self._custom_profiles:
             QMessageBox.warning(self, "Error", f"Profile '{name}' already exists.")
             return
         self._save_current_to_working_copy()
@@ -525,7 +525,7 @@ class ProfilesTab(QWidget):
 
     def _on_delete_profile(self) -> None:
         name = self._profile_combo.currentText()
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
         reply = QMessageBox.question(
             self,

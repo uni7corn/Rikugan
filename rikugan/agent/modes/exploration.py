@@ -97,7 +97,7 @@ def _run_phase1_subagent(
         loop._clear_exploration_state()
 
 
-def _run_phase1_inline(
+def run_phase1_inline(
     loop: AgentLoop,
     state: ExplorationState,
     exploration_system: str,
@@ -243,9 +243,9 @@ def _run_phase2_plan(
 
     state.transition_to(ExplorationPhase.EXECUTE)
     yield TurnEvent.exploration_phase_change("plan", "execute", "Plan approved. Executing patches.")
-    from .plan import _persist_plan
+    from .plan import persist_plan
 
-    _persist_plan(loop, user_goal, steps)
+    persist_plan(loop, user_goal, steps)
     return steps
 
 
@@ -409,7 +409,7 @@ def run_exploration_mode(
         if not explore_only:
             yield from _run_phase1_subagent(loop, state, user_message, exploration_system)
         else:
-            yield from _run_phase1_inline(loop, state, exploration_system, tools_schema, explore_only)
+            yield from run_phase1_inline(loop, state, exploration_system, tools_schema, explore_only)
 
         if explore_only:
             summary = state.knowledge_base.to_summary()

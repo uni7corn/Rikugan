@@ -52,14 +52,14 @@ def show_oauth_consent(parent: QWidget | None = None) -> str:
     btn_box.addButton(api_btn, QDialogButtonBox.ButtonRole.RejectRole)
     layout.addWidget(btn_box)
 
-    result = {"choice": "cancel"}
+    choice = ["cancel"]
 
     def _on_accept() -> None:
-        result["choice"] = "accept"
+        choice[0] = "accept"
         dlg.accept()
 
     def _on_api_key() -> None:
-        result["choice"] = "api_key"
+        choice[0] = "api_key"
         dlg.reject()
 
     ok_btn.clicked.connect(_on_accept)
@@ -74,4 +74,4 @@ def show_oauth_consent(parent: QWidget | None = None) -> str:
     dlg.setParent(None)
     dlg.deleteLater()
 
-    return result["choice"]
+    return choice[0]
