@@ -18,6 +18,7 @@ from .qt_compat import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    qt_flags,
 )
 
 _THINKING_PHRASES = [
@@ -115,7 +116,10 @@ class UserMessageWidget(QFrame):
         self._content = QLabel(text)
         self._content.setWordWrap(True)
         self._content.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+            )
         )
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         self._content.setMinimumWidth(0)
@@ -196,7 +200,10 @@ class _ThinkingBlock(QFrame):
         self._content.setWordWrap(True)
         self._content.setTextFormat(Qt.TextFormat.RichText)
         self._content.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+            )
         )
         self._content.setStyleSheet("color: #606078; font-size: 12px;")
         self._content.hide()
@@ -248,9 +255,11 @@ class AssistantMessageWidget(QFrame):
         self._content.setWordWrap(True)
         self._content.setTextFormat(Qt.TextFormat.RichText)
         self._content.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-            | Qt.TextInteractionFlag.LinksAccessibleByMouse
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+                Qt.TextInteractionFlag.LinksAccessibleByMouse,
+            )
         )
         self._content.setOpenExternalLinks(True)
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
@@ -364,7 +373,10 @@ class QueuedMessageWidget(QFrame):
         self._content = QLabel(text)
         self._content.setWordWrap(True)
         self._content.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+            )
         )
         self._content.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         content_layout.addWidget(self._content)
@@ -399,7 +411,10 @@ class UserQuestionWidget(QFrame):
         self._q_label = QLabel(question)
         self._q_label.setWordWrap(True)
         self._q_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+            )
         )
         self._q_label.setStyleSheet("color: #d4d4d4; font-size: 13px;")
         layout.addWidget(self._q_label)
@@ -627,7 +642,10 @@ class ErrorMessageWidget(QFrame):
         self._content = QLabel(error_text)
         self._content.setWordWrap(True)
         self._content.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            qt_flags(
+                Qt.TextInteractionFlag.TextSelectableByMouse,
+                Qt.TextInteractionFlag.TextSelectableByKeyboard,
+            )
         )
         self._content.setStyleSheet("color: #f44747; font-size: 12px;")
         self._content.setMinimumWidth(0)

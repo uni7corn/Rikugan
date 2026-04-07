@@ -23,6 +23,7 @@ from .qt_compat import (
     QVBoxLayout,
     QWidget,
     Signal,
+    qt_flags,
 )
 
 _BTN_STYLE = (
@@ -311,6 +312,7 @@ class BulkRenamerWidget(QWidget):
         # Internal state
         self._entries: list[FunctionEntry] = []
         self._addr_to_entry: dict[int, int] = {}  # address -> index in _entries
+        self._addr_to_row: dict[int, int] = {}  # address -> current table row when unsorted/load order row
         self._paused = False
 
     def _reposition_header_check(self, _idx: int = 0, _old: int = 0, _new: int = 0) -> None:
@@ -350,6 +352,7 @@ class BulkRenamerWidget(QWidget):
         self._table.setRowCount(0)
         self._entries.clear()
         self._addr_to_entry.clear()
+        self._addr_to_row.clear()
 
         self._table.setRowCount(len(functions))
 
@@ -401,6 +404,7 @@ class BulkRenamerWidget(QWidget):
             )
             self._entries.append(entry)
             self._addr_to_entry[entry.address] = row
+            self._addr_to_row[entry.address] = row
 
             ic = entry.instruction_count
 
@@ -410,35 +414,35 @@ class BulkRenamerWidget(QWidget):
             check_item.setCheckState(
                 Qt.CheckState.Checked if (is_auto and not entry.is_import) else Qt.CheckState.Unchecked
             )
-            check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            check_item.setFlags(qt_flags(Qt.ItemFlag.ItemIsUserCheckable, Qt.ItemFlag.ItemIsEnabled))
             self._table.setItem(row, _COL_CHECK, check_item)
 
             # Address (numeric sort, store address in UserRole for lookup)
             addr_item = _NumericTableItem(f"0x{entry.address:X}", entry.address)
-            addr_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            addr_item.setFlags(qt_flags(Qt.ItemFlag.ItemIsEnabled, Qt.ItemFlag.ItemIsSelectable))
             addr_item.setData(Qt.ItemDataRole.UserRole, entry.address)
             addr_item.setToolTip(f"0x{entry.address:016X}")
             self._table.setItem(row, _COL_ADDR, addr_item)
 
             # Current name
             name_item = QTableWidgetItem(entry.name)
-            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            name_item.setFlags(qt_flags(Qt.ItemFlag.ItemIsEnabled, Qt.ItemFlag.ItemIsSelectable))
             self._table.setItem(row, _COL_NAME, name_item)
 
             # Length (numeric sort)
             length_item = _NumericTableItem(str(ic) if ic else "0", ic)
-            length_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            length_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            length_item.setFlags(qt_flags(Qt.ItemFlag.ItemIsEnabled, Qt.ItemFlag.ItemIsSelectable))
+            length_item.setTextAlignment(qt_flags(Qt.AlignmentFlag.AlignRight, Qt.AlignmentFlag.AlignVCenter))
             self._table.setItem(row, _COL_LENGTH, length_item)
 
             # New name (initially empty)
             new_item = QTableWidgetItem("")
-            new_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            new_item.setFlags(qt_flags(Qt.ItemFlag.ItemIsEnabled, Qt.ItemFlag.ItemIsSelectable))
             self._table.setItem(row, _COL_NEWNAME, new_item)
 
             # Status
             status_item = QTableWidgetItem("")
-            status_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            status_item.setFlags(qt_flags(Qt.ItemFlag.ItemIsEnabled, Qt.ItemFlag.ItemIsSelectable))
             self._table.setItem(row, _COL_STATUS, status_item)
 
     def _finish_load(self) -> None:
@@ -474,9 +478,13 @@ class BulkRenamerWidget(QWidget):
 
     def _find_row_for_address(self, address: int) -> int | None:
         """Find the current visual row for a given address (sort-safe)."""
+        cached_row = self._addr_to_row.get(address)
+        if cached_row is not None:
+            return cached_row
         for row in range(self._table.rowCount()):
             addr_item = self._table.item(row, _COL_ADDR)
             if addr_item is not None and addr_item.data(Qt.ItemDataRole.UserRole) == address:
+                self._addr_to_row[address] = row
                 return row
         return None
 

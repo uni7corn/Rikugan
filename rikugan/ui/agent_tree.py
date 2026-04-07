@@ -17,6 +17,7 @@ from .qt_compat import (
     QVBoxLayout,
     QWidget,
     Signal,
+    qt_flags,
 )
 
 _STATUS_COLORS: dict[str, str] = {
@@ -209,7 +210,7 @@ class AgentTreeWidget(QWidget):
         else:
             item = QTreeWidgetItem(self._tree)
             item.setData(0, Qt.ItemDataRole.UserRole, info.agent_id)
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            item.setFlags(qt_flags(Qt.ItemFlag.ItemIsEnabled, Qt.ItemFlag.ItemIsSelectable))
             self._items[info.agent_id] = item
 
         item.setText(0, info.name)

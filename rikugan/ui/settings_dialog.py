@@ -752,16 +752,19 @@ class SettingsDialog(QDialog):
             pw_confirm.setPlaceholderText("Confirm password")
             layout.addWidget(pw_confirm)
 
-        from .qt_compat import QDialogButtonBox
+        from .qt_compat import QDialogButtonBox, qt_flags, qt_run
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            qt_flags(
+                QDialogButtonBox.StandardButton.Ok,
+                QDialogButtonBox.StandardButton.Cancel,
+            ),
         )
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
 
-        if dlg.exec_() != QDialog.DialogCode.Accepted:
+        if qt_run(dlg) != QDialog.DialogCode.Accepted:
             return ""
 
         password = pw_edit.text()

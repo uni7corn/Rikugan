@@ -37,6 +37,8 @@ from .qt_compat import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    qt_flags,
+    qt_run,
 )
 from .styles import DARK_THEME
 from .tool_widgets import _SharedSpinnerTimer
@@ -202,7 +204,7 @@ class _AddButtonTabBar(QTabBar):
         menu = QMenu(self)
         export_action = menu.addAction("Export Chat")
         fork_action = menu.addAction("Fork Session")
-        action = menu.exec_(self.mapToGlobal(pos))
+        action = qt_run(menu, self.mapToGlobal(pos))
         if action == export_action and self._export_tab_callback is not None:
             self._export_tab_callback(index)
         elif action == fork_action and self._fork_tab_callback is not None:
@@ -260,6 +262,7 @@ class RikuganPanelCore(QWidget):
 
         # Tab-to-ChatView mapping
         self._chat_views: dict[str, ChatView] = {}
+        self._pending_restore_messages: dict[str, list] = {}
         self._context_bar: ContextBar | None = None
         self._mutation_panel: MutationLogPanel | None = None
         self._skills_refresh_timer: QTimer | None = None
@@ -290,13 +293,16 @@ class RikuganPanelCore(QWidget):
             pw_edit.setPlaceholderText("Password")
             layout.addWidget(pw_edit)
             buttons = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+                qt_flags(
+                    QDialogButtonBox.StandardButton.Ok,
+                    QDialogButtonBox.StandardButton.Cancel,
+                ),
             )
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
             layout.addWidget(buttons)
 
-            if dlg.exec_() != QDialog.DialogCode.Accepted:
+            if qt_run(dlg) != QDialog.DialogCode.Accepted:
                 break  # user cancelled — keys stay empty
             if self._config.decrypt_stored_keys(pw_edit.text()):
                 log_debug("API keys decrypted successfully")
@@ -635,11 +641,16 @@ class RikuganPanelCore(QWidget):
             cb = QCheckBox(f"Include subagent logs ({len(session.subagent_logs)} subagent runs)")
             cb.setChecked(True)
             layout.addWidget(cb)
-            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons = QDialogButtonBox(
+                qt_flags(
+                    QDialogButtonBox.StandardButton.Ok,
+                    QDialogButtonBox.StandardButton.Cancel,
+                )
+            )
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
             layout.addWidget(buttons)
-            if not dlg.exec():
+            if not qt_run(dlg):
                 return
             include_subagents = cb.isChecked()
 
@@ -724,6 +735,7 @@ class RikuganPanelCore(QWidget):
         if tab_id is None:
             return
         self._ctrl.switch_tab(tab_id)
+        self._restore_messages_if_needed(tab_id)
         self._update_token_display()
 
     def _tab_id_at_index(self, index: int) -> str | None:
@@ -743,6 +755,15 @@ class RikuganPanelCore(QWidget):
     def _active_chat_view(self) -> ChatView | None:
         """Return the ChatView for the currently active tab."""
         return self._chat_views.get(self._ctrl.active_tab_id)
+
+    def _restore_messages_if_needed(self, tab_id: str) -> None:
+        """Replay deferred restored messages for a tab the first time it is shown."""
+        messages = self._pending_restore_messages.pop(tab_id, None)
+        if not messages:
+            return
+        chat_view = self._chat_views.get(tab_id)
+        if chat_view is not None:
+            chat_view.restore_from_messages(messages)
 
     def _update_token_display(self, token_count: int | None = None) -> None:
         """Update the context bar token display with context window percentage."""
@@ -831,6 +852,7 @@ class RikuganPanelCore(QWidget):
             if w:
                 w.deleteLater()
         self._chat_views.clear()
+        self._pending_restore_messages.clear()
         # Create default tab and try to restore saved sessions
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
         self._try_restore_session()
@@ -886,7 +908,7 @@ class RikuganPanelCore(QWidget):
                 registry=self._ctrl.provider_registry,
                 tool_registry=self._ctrl.tool_registry,
             )
-            result = dlg.exec_()
+            result = qt_run(dlg)
             if result:
                 self._config.save(password=dlg.encryption_password)
                 self._ctrl.update_settings()
@@ -918,7 +940,7 @@ class RikuganPanelCore(QWidget):
         )
         no_btn = dlg.addButton("No", QMessageBox.ButtonRole.RejectRole)
         dlg.setDefaultButton(no_btn)
-        dlg.exec_()
+        qt_run(dlg)
         clicked = dlg.clickedButton()
         if clicked is clear_btn:
             return "clear"
@@ -1068,8 +1090,8 @@ class RikuganPanelCore(QWidget):
 
             for tab_id, session in restored:
                 label = self._ctrl.tab_label(tab_id)
-                cv = self._create_tab(tab_id, label)
-                cv.restore_from_messages(session.messages)
+                self._pending_restore_messages[tab_id] = session.messages
+                self._create_tab(tab_id, label)
 
             # Activate the last (most recent) tab
             if restored:
@@ -1080,6 +1102,7 @@ class RikuganPanelCore(QWidget):
                         if self._tab_widget.widget(i) is last_cv:
                             self._tab_widget.setCurrentIndex(i)
                             break
+                    self._restore_messages_if_needed(last_tab_id)
                 self._update_token_display()
         else:
             # No saved sessions — try legacy single-session restore
