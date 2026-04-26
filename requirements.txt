@@ -1,13 +1,7 @@
-# Rikugan - LLM provider clients
 anthropic>=0.39.0
 openai>=1.50.0
 google-genai>=1.0.0
-
-# MCP client support
 mcp>=1.0.0
-
-# TOML parsing (stdlib tomllib backport for Python <3.11, e.g. IDA Pro 9.x)
 tomli>=2.0.0
-
-# IDA Pro deobfuscation skill (optional, IDA only)
+cryptography>=43.0.0
 ida-domain>=0.1.0

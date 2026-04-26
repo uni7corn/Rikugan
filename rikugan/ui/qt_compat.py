@@ -16,6 +16,7 @@ Detection order:
 from __future__ import annotations
 
 import sys
+from typing import Any, cast
 
 
 def _detect_binding() -> str:
@@ -59,14 +60,17 @@ QT_BINDING: str = _detect_binding()
 # ---------------------------------------------------------------------------
 
 if QT_BINDING == "PySide6":
-    from PySide6.QtCore import QObject, Qt, QTimer, Signal
+    from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
     from PySide6.QtGui import (
         QColor,
         QFont,
+        QIntValidator,
+        QPalette,
         QSyntaxHighlighter,
         QTextCharFormat,
     )
     from PySide6.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -78,6 +82,7 @@ if QT_BINDING == "PySide6":
         QFrame,
         QGroupBox,
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QLineEdit,
         QListWidget,
@@ -85,27 +90,38 @@ if QT_BINDING == "PySide6":
         QMenu,
         QMessageBox,
         QPlainTextEdit,
+        QProgressBar,
         QPushButton,
+        QRadioButton,
         QScrollArea,
         QSizePolicy,
         QSpinBox,
         QSplitter,
+        QStackedWidget,
         QTabBar,
+        QTableWidget,
+        QTableWidgetItem,
         QTabWidget,
+        QTextEdit,
         QToolButton,
+        QTreeWidget,
+        QTreeWidgetItem,
         QVBoxLayout,
         QWidget,
     )
 else:
-    from PyQt5.QtCore import QObject, Qt, QTimer  # noqa: F401
+    from PyQt5.QtCore import QEvent, QObject, Qt, QTimer  # noqa: F401
     from PyQt5.QtCore import pyqtSignal as Signal  # noqa: F401
     from PyQt5.QtGui import (  # noqa: F401
         QColor,
         QFont,
+        QIntValidator,
+        QPalette,
         QSyntaxHighlighter,
         QTextCharFormat,
     )
     from PyQt5.QtWidgets import (  # noqa: F401
+        QAbstractItemView,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -117,6 +133,7 @@ else:
         QFrame,
         QGroupBox,
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QLineEdit,
         QListWidget,
@@ -124,17 +141,57 @@ else:
         QMenu,
         QMessageBox,
         QPlainTextEdit,
+        QProgressBar,
         QPushButton,
+        QRadioButton,
         QScrollArea,
         QSizePolicy,
         QSpinBox,
         QSplitter,
+        QStackedWidget,
         QTabBar,
+        QTableWidget,
+        QTableWidgetItem,
         QTabWidget,
+        QTextEdit,
         QToolButton,
+        QTreeWidget,
+        QTreeWidgetItem,
         QVBoxLayout,
         QWidget,
     )
+
+
+def qt_flags(*flags: object) -> object:
+    """Combine same-family Qt enum/flag values without relying on PyQt5 shim bitwise behavior."""
+    if not flags:
+        return 0
+
+    value = 0
+    flag_type: type[Any] | None = None
+    for flag in flags:
+        current_type = type(flag)
+        if flag_type is None:
+            flag_type = current_type
+        elif current_type is not flag_type:
+            raise TypeError(f"qt_flags() received mixed flag types: {flag_type.__name__} and {current_type.__name__}")
+        flag_value = getattr(flag, "value", flag)
+        value |= int(cast(Any, flag_value))
+
+    if flag_type is None:
+        return value
+    return cast(Any, flag_type)(value)
+
+
+def qt_run(obj: object, *args, **kwargs) -> object:
+    """Call Qt6-style run API with Qt5 fallback where needed."""
+    run = getattr(obj, "exec", None)
+    if callable(run):
+        return run(*args, **kwargs)
+    run_legacy = getattr(obj, "exec_", None)
+    if callable(run_legacy):
+        return run_legacy(*args, **kwargs)
+    raise AttributeError(f"{type(obj).__name__} has no exec/exec_ method")
 
 
 def is_pyside6() -> bool:

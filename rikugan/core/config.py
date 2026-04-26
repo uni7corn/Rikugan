@@ -49,7 +49,7 @@ class RikuganConfig:
     plan_mode_default: bool = False
     checkpoint_auto_save: bool = True
     approve_mutations: bool = False  # require approval for mutating tools (rename, retype, etc.)
-    exploration_turn_limit: int = 30  # max turns in exploration phase before forcing transition
+    exploration_turn_limit: int = 100  # max turns in exploration phase before forcing transition
     max_retries: int = 3  # max retries on rate-limit / transient API errors
     silent_retry_mode: bool = False  # show loading indicator instead of error messages on retry
     theme: str = "dark"
@@ -62,6 +62,24 @@ class RikuganConfig:
     # Analysis profiles
     active_profile: str = "default"
     custom_profiles: dict[str, dict] = field(default_factory=dict)
+
+    # A2A / external agents
+    a2a_auto_discover: bool = True
+    a2a_agents: list[dict[str, Any]] = field(default_factory=list)
+
+    # Context management
+    preserve_context: bool = False  # disable tool result truncation + context compaction
+
+    # OAuth consent — user must accept risk before keychain autoload
+    oauth_consent_accepted: bool = False
+
+    # Bulk renamer defaults
+    bulk_renamer_batch_size: int = 10
+    bulk_renamer_max_concurrent: int = 3
+
+    # API key encryption
+    encrypt_api_keys: bool = False
+    _encryption_block: dict = field(default_factory=dict, repr=False)
 
     _config_dir: str = field(default_factory=_default_config_dir, repr=False)
 
@@ -102,7 +120,7 @@ class RikuganConfig:
                     errors.append(f"custom_profiles['{k}'] must be a dict")
         return errors
 
-    def save(self) -> None:
+    def save(self, password: str = "") -> None:
         errors = self.validate()
         if errors:
             for err in errors:
@@ -118,7 +136,25 @@ class RikuganConfig:
         self._snapshot_current_provider()
         d = asdict(self)
         d.pop("_config_dir", None)
+        d.pop("_encryption_block", None)
         d["schema_version"] = CONFIG_SCHEMA_VERSION
+
+        if self.encrypt_api_keys and password:
+            from .crypto import encrypt_keys
+
+            # Collect all API keys into a single blob
+            key_data = {
+                "provider_api_key": d["provider"]["api_key"],
+                "providers": {name: info.get("api_key", "") for name, info in d.get("providers", {}).items()},
+            }
+            d["encryption"] = {"enabled": True, **encrypt_keys(password, key_data)}
+            # Zero out plaintext keys on disk
+            d["provider"]["api_key"] = ""
+            for info in d.get("providers", {}).values():
+                info["api_key"] = ""
+        else:
+            d["encryption"] = {"enabled": False}
+
         with open(self.config_path, "w") as f:
             json.dump(d, f, indent=2)
 
@@ -129,6 +165,14 @@ class RikuganConfig:
             data = json.load(f)
         # Schema version check (for future migrations)
         _stored_version = data.pop("schema_version", 0)
+
+        # Detect encrypted API keys — actual decryption deferred to
+        # decrypt_stored_keys() which is called at session start.
+        enc = data.pop("encryption", {})
+        if enc.get("enabled"):
+            self.encrypt_api_keys = True
+            self._encryption_block = enc
+
         if "provider" in data:
             for k, v in data["provider"].items():
                 if hasattr(self.provider, k):
@@ -149,9 +193,47 @@ class RikuganConfig:
             "enabled_external_mcp",
             "active_profile",
             "custom_profiles",
+            "a2a_auto_discover",
+            "a2a_agents",
+            "bulk_renamer_batch_size",
+            "bulk_renamer_max_concurrent",
+            "oauth_consent_accepted",
+            "encrypt_api_keys",
         ):
             if k in data:
                 setattr(self, k, data[k])
+
+    def has_encrypted_keys(self) -> bool:
+        """True if the config was loaded with encrypted keys pending decryption."""
+        return self.encrypt_api_keys and bool(self._encryption_block)
+
+    def decrypt_stored_keys(self, password: str) -> bool:
+        """Decrypt stored API keys using *password*.
+
+        Returns True on success, False on wrong password.
+        """
+        if not self._encryption_block:
+            return True
+        try:
+            from .crypto import decrypt_keys
+
+            keys = decrypt_keys(password, self._encryption_block)
+        except ValueError:
+            return False
+
+        # Restore plaintext keys into the live config
+        self.provider.api_key = keys.get("provider_api_key", "")
+        for name, key in keys.get("providers", {}).items():
+            if name in self.providers:
+                self.providers[name]["api_key"] = key
+
+        # Restore the current provider's key from the providers snapshot
+        saved = self.providers.get(self.provider.name, {})
+        if saved.get("api_key"):
+            self.provider.api_key = saved["api_key"]
+
+        self._encryption_block = {}
+        return True
 
     def _snapshot_current_provider(self) -> None:
         """Store current provider settings into the providers dict."""

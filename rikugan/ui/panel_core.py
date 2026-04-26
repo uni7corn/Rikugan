@@ -12,9 +12,10 @@ from typing import Any
 from ..agent.mutation import MutationRecord
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.config import RikuganConfig
-from ..core.logging import log_debug, log_error, log_info
+from ..core.logging import log_debug, log_error, log_info, log_warning
 from ..core.types import Role
 from ..providers.auth_cache import resolve_auth_cached
+from ..providers.registry import ProviderRegistry
 from .chat_view import ChatView
 from .context_bar import ContextBar
 from .input_area import InputArea
@@ -25,10 +26,12 @@ from .qt_compat import (
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     Qt,
     QTabBar,
     QTabWidget,
@@ -36,11 +39,17 @@ from .qt_compat import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-    Signal,
+    qt_flags,
+    qt_run,
 )
-from .settings_dialog import SettingsDialog
-from .styles import DARK_THEME
+from .styles import (
+    build_small_button_stylesheet,
+    build_theme_stylesheet,
+    maybe_host_stylesheet,
+    use_native_host_theme,
+)
 from .tool_widgets import _SharedSpinnerTimer
+from .tools_panel import ToolsPanel
 
 _TOOL_RESULT_TRUNCATE_CHARS = 2000
 _SMALL_BTN_STYLE = (
@@ -164,12 +173,11 @@ def _export_format_subagent_log(messages) -> str:
 class _AddButtonTabBar(QTabBar):
     """Tab bar with an integrated '+' button positioned after the last tab."""
 
-    add_tab_requested = Signal()
-    export_tab_requested = Signal(int)
-    fork_tab_requested = Signal(int)
-
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._add_tab_callback: Callable[[], None] | None = None
+        self._export_tab_callback: Callable[[int], None] | None = None
+        self._fork_tab_callback: Callable[[int], None] | None = None
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self._add_btn = QToolButton(self)
@@ -177,11 +185,26 @@ class _AddButtonTabBar(QTabBar):
         self._add_btn.setAutoRaise(True)
         self._add_btn.setFixedSize(20, 20)
         self._add_btn.setStyleSheet(
-            "QToolButton { color: #d4d4d4; font-size: 14px; font-weight: bold; "
-            "border: none; background: transparent; }"
-            "QToolButton:hover { background: #3c3c3c; border-radius: 3px; }"
+            maybe_host_stylesheet(
+                "QToolButton { color: #d4d4d4; font-size: 14px; font-weight: bold; "
+                "border: none; background: transparent; }"
+                "QToolButton:hover { background: #3c3c3c; border-radius: 3px; }"
+            )
         )
-        self._add_btn.clicked.connect(self.add_tab_requested)
+        self._add_btn.clicked.connect(self._handle_add_tab)
+
+    def set_add_tab_callback(self, callback: Callable[[], None] | None) -> None:
+        self._add_tab_callback = callback
+
+    def set_export_tab_callback(self, callback: Callable[[int], None] | None) -> None:
+        self._export_tab_callback = callback
+
+    def set_fork_tab_callback(self, callback: Callable[[int], None] | None) -> None:
+        self._fork_tab_callback = callback
+
+    def _handle_add_tab(self) -> None:
+        if self._add_tab_callback is not None:
+            self._add_tab_callback()
 
     def _show_context_menu(self, pos):
         index = self.tabAt(pos)
@@ -190,11 +213,11 @@ class _AddButtonTabBar(QTabBar):
         menu = QMenu(self)
         export_action = menu.addAction("Export Chat")
         fork_action = menu.addAction("Fork Session")
-        action = menu.exec_(self.mapToGlobal(pos))
-        if action == export_action:
-            self.export_tab_requested.emit(index)
-        elif action == fork_action:
-            self.fork_tab_requested.emit(index)
+        action = qt_run(menu, self.mapToGlobal(pos))
+        if action == export_action and self._export_tab_callback is not None:
+            self._export_tab_callback(index)
+        elif action == fork_action and self._fork_tab_callback is not None:
+            self._fork_tab_callback(index)
 
     def tabInserted(self, index):
         super().tabInserted(index)
@@ -225,13 +248,20 @@ class RikuganPanelCore(QWidget):
         self,
         controller_factory: Callable[[RikuganConfig], Any],
         ui_hooks_factory: Callable[[Callable[[], Any]], Any] | None = None,
+        tools_form_factory: Callable[..., Any] | None = None,
         parent: QWidget = None,
     ):
         super().__init__(parent)
         self._config = RikuganConfig.load_or_create()
+        self._use_native_host_theme = use_native_host_theme()
+        self._dependency_warnings = ProviderRegistry().dependency_warnings()
         log_debug(
             f"Config loaded: provider={self._config.provider.name} model={self._config.provider.model}",
         )
+        for warning in self._dependency_warnings:
+            log_warning(f"Dependency warning: {warning}")
+        if self._config.has_encrypted_keys():
+            self._prompt_decryption_password()
         self._ctrl = controller_factory(self._config)
         self._poll_timer: QTimer | None = None
         self._polling = False
@@ -240,12 +270,17 @@ class RikuganPanelCore(QWidget):
         self._is_shutdown = False
         self._ui_hooks_factory = ui_hooks_factory
         self._ui_hooks = None
+        self._tools_form_factory = tools_form_factory
+        self._tools_form: Any = None  # IDA PluginForm wrapper (if available)
 
         # Tab-to-ChatView mapping
         self._chat_views: dict[str, ChatView] = {}
+        self._pending_restore_messages: dict[str, list] = {}
         self._context_bar: ContextBar | None = None
         self._mutation_panel: MutationLogPanel | None = None
         self._skills_refresh_timer: QTimer | None = None
+
+        self._check_oauth_consent()
 
         def _warm_oauth() -> None:
             try:
@@ -255,6 +290,50 @@ class RikuganPanelCore(QWidget):
 
         threading.Thread(target=_warm_oauth, daemon=True).start()
         self._build_ui()
+
+    def _prompt_decryption_password(self) -> None:
+        """Prompt for the encryption password at session start."""
+        from .qt_compat import QDialog, QDialogButtonBox, QLabel, QLineEdit, QMessageBox, QVBoxLayout
+
+        for _attempt in range(3):
+            dlg = QDialog()
+            dlg.setWindowTitle("Rikugan — Encrypted API Keys")
+            dlg.setMinimumWidth(350)
+            layout = QVBoxLayout(dlg)
+            layout.addWidget(QLabel("Enter password to decrypt API keys:"))
+            pw_edit = QLineEdit()
+            pw_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            pw_edit.setPlaceholderText("Password")
+            layout.addWidget(pw_edit)
+            buttons = QDialogButtonBox(
+                qt_flags(
+                    QDialogButtonBox.StandardButton.Ok,
+                    QDialogButtonBox.StandardButton.Cancel,
+                ),
+            )
+            buttons.accepted.connect(dlg.accept)
+            buttons.rejected.connect(dlg.reject)
+            layout.addWidget(buttons)
+
+            if qt_run(dlg) != QDialog.DialogCode.Accepted:
+                break  # user cancelled — keys stay empty
+            if self._config.decrypt_stored_keys(pw_edit.text()):
+                log_debug("API keys decrypted successfully")
+                return
+            QMessageBox.warning(None, "Wrong Password", "Incorrect password. Please try again.")
+        log_debug("API key decryption skipped or failed — keys will be empty")
+
+    def _check_oauth_consent(self) -> None:
+        """Apply persisted OAuth consent to the auth cache.
+
+        The consent dialog itself is only shown from the settings checkbox
+        (``_on_oauth_toggled``).  This method just restores the persisted
+        state so the warm-up thread knows whether keychain autoload is
+        allowed.
+        """
+        from ..providers.auth_cache import set_keychain_consent
+
+        set_keychain_consent(self._config.oauth_consent_accepted)
 
     def _ensure_skills_refresh_timer(self) -> None:
         """Refresh skill autocomplete once background discovery completes."""
@@ -289,18 +368,79 @@ class RikuganPanelCore(QWidget):
             # Runtime init completed but no skills found; stop polling.
             self._stop_skills_refresh_timer()
 
+    _MODE_BAR_STYLE = (
+        "QTabBar { background: #2d2d2d; border: none; border-bottom: 1px solid #3c3c3c; }"
+        "QTabBar::tab { background: #2d2d2d; color: #808080; padding: 4px 16px; "
+        "border: none; border-bottom: 2px solid transparent; font-size: 11px; }"
+        "QTabBar::tab:selected { color: #d4d4d4; border-bottom: 2px solid #4ec9b0; }"
+        "QTabBar::tab:hover:!selected { color: #d4d4d4; }"
+    )
+
     def _build_ui(self) -> None:
-        self.setStyleSheet(DARK_THEME)
         self.setObjectName("rikugan_panel")
+        self.setStyleSheet(build_theme_stylesheet(self))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Top-level mode switcher: Chat | Tools.
+        # Hosts may optionally provide tools in a separate form.
+        self._mode_bar = QTabBar()
+        self._mode_bar.setObjectName("mode_bar")
+        self._mode_bar.setStyleSheet("" if self._use_native_host_theme else self._MODE_BAR_STYLE)
+        self._mode_bar.setExpanding(False)
+        self._mode_bar.setDrawBase(False)
+        self._mode_bar.addTab("Chat")
+        self._mode_bar.addTab("Tools")
+        self._mode_bar.currentChanged.connect(self._on_mode_changed)
+        if self._tools_form_factory is not None:
+            self._mode_bar.setVisible(False)
+        layout.addWidget(self._mode_bar)
+
+        # Stacked content: page 0 = chat, page 1 = tools
+        self._mode_stack = QStackedWidget()
+        layout.addWidget(self._mode_stack, 1)
+
+        self._dependency_banner = QLabel()
+        self._dependency_banner.setObjectName("dependency_banner")
+        self._dependency_banner.setWordWrap(True)
+        self._dependency_banner.setStyleSheet(
+            maybe_host_stylesheet(
+                "QLabel#dependency_banner {"
+                "background: #4b3900; color: #f5d98b; border-top: 1px solid #6b5000; "
+                "border-bottom: 1px solid #6b5000; padding: 6px 8px; font-size: 11px; }"
+            )
+        )
+        if self._dependency_warnings:
+            self._dependency_banner.setText("Warnings: " + " ".join(self._dependency_warnings))
+            layout.insertWidget(1, self._dependency_banner)
+        else:
+            self._dependency_banner.hide()
+
+        # --- Page 0: Chat ---
+        chat_page = QWidget()
+        chat_layout = QVBoxLayout(chat_page)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(0)
         self._build_tab_widget()
-        self._build_main_splitter(layout)
+        self._build_main_splitter(chat_layout)
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
-        layout.addWidget(self._build_input_section())
+        chat_layout.addWidget(self._build_input_section())
+        self._mode_stack.addWidget(chat_page)
+
+        # --- Page 1: Tools (lazily populated on first switch) ---
+        self._tools_panel: ToolsPanel | None = ToolsPanel()
+        self._tools_panel.hide_header()
+        if self._tools_form_factory is not None:
+            # Separate tools-form hosts keep a lightweight placeholder in the
+            # stack so page indices stay stable while tools live elsewhere.
+            _tools_placeholder = QWidget()
+            self._mode_stack.addWidget(_tools_placeholder)
+        else:
+            # Binary Ninja: embed directly in the mode stack.
+            self._mode_stack.addWidget(self._tools_panel)
+        self._tools_tab_index = -1  # kept for IDA compat
 
         self._context_bar = ContextBar()
         self._context_bar.set_model(self._config.provider.model)
@@ -326,19 +466,21 @@ class RikuganPanelCore(QWidget):
         self._tab_widget.setTabsClosable(True)
         self._tab_widget.tabCloseRequested.connect(self._on_close_tab)
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
-        self._tab_bar.add_tab_requested.connect(self._on_new_tab)
-        self._tab_bar.export_tab_requested.connect(self._on_export_tab)
-        self._tab_bar.fork_tab_requested.connect(self._on_fork_tab)
+        self._tab_bar.set_add_tab_callback(self._on_new_tab)
+        self._tab_bar.set_export_tab_callback(self._on_export_tab)
+        self._tab_bar.set_fork_tab_callback(self._on_fork_tab)
         self._tab_widget.setStyleSheet(
-            "QTabWidget::pane { border: none; }"
-            "QTabBar { background: #1e1e1e; border: none; }"
-            "QTabBar::tab { background: #252526; color: #cccccc; padding: 2px 8px; "
-            "border: none; border-right: 1px solid #3c3c3c; "
-            "font-size: 11px; max-width: 140px; }"
-            "QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; }"
-            "QTabBar::tab:hover { background: #2d2d2d; }"
-            "QTabBar::close-button { image: none; border: none; padding: 1px; }"
-            "QTabBar::close-button:hover { background: #c42b1c; border-radius: 2px; }"
+            maybe_host_stylesheet(
+                "QTabWidget::pane { border: none; }"
+                "QTabBar { background: #1e1e1e; border: none; }"
+                "QTabBar::tab { background: #252526; color: #cccccc; padding: 2px 8px; "
+                "border: none; border-right: 1px solid #3c3c3c; "
+                "font-size: 11px; max-width: 140px; }"
+                "QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; }"
+                "QTabBar::tab:hover { background: #2d2d2d; }"
+                "QTabBar::close-button { image: none; border: none; padding: 1px; }"
+                "QTabBar::close-button:hover { background: #c42b1c; border-radius: 2px; }"
+            )
         )
         self._tab_bar.setExpanding(False)
         self._tab_bar.setVisible(False)  # hidden until 2+ tabs
@@ -347,13 +489,14 @@ class RikuganPanelCore(QWidget):
         """Create the horizontal splitter (chat | mutation log) and add to layout."""
         self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(1)
-        self._main_splitter.setStyleSheet("QSplitter::handle { background: #3c3c3c; }")
+        self._main_splitter.setStyleSheet(maybe_host_stylesheet("QSplitter::handle { background: #3c3c3c; }"))
         self._main_splitter.addWidget(self._tab_widget)
 
         self._mutation_panel = MutationLogPanel()
         self._mutation_panel.undo_requested.connect(self._on_undo_requested)
         self._mutation_panel.setVisible(False)
         self._main_splitter.addWidget(self._mutation_panel)
+
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 1)
 
@@ -365,7 +508,7 @@ class RikuganPanelCore(QWidget):
         input_layout = QHBoxLayout(self._input_container)
         input_layout.setContentsMargins(8, 4, 8, 4)
 
-        self._input_area = InputArea()
+        self._input_area = InputArea(self._input_container)
         self._input_area.set_submit_callback(self._on_submit)
         self._input_area.set_cancel_callback(self._on_cancel)
         self._input_area.set_skill_slugs(self._ctrl.skill_slugs)
@@ -382,38 +525,56 @@ class RikuganPanelCore(QWidget):
         self._send_btn = QPushButton("Send")
         self._send_btn.setObjectName("send_button")
         self._send_btn.setFixedWidth(64)
-        self._send_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._send_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
         self._send_btn.clicked.connect(self._on_send_clicked)
         btn_layout.addWidget(self._send_btn)
         self._cancel_btn = QPushButton("Stop")
         self._cancel_btn.setObjectName("cancel_button")
         self._cancel_btn.setFixedWidth(64)
-        self._cancel_btn.setStyleSheet(_CANCEL_BTN_STYLE)
+        self._cancel_btn.setStyleSheet(maybe_host_stylesheet(_CANCEL_BTN_STYLE))
         self._cancel_btn.setVisible(False)
         self._cancel_btn.clicked.connect(self._on_cancel)
         btn_layout.addWidget(self._cancel_btn)
         self._new_btn = QPushButton("New")
         self._new_btn.setFixedWidth(64)
-        self._new_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._new_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
         self._new_btn.clicked.connect(self._on_new_tab)
         btn_layout.addWidget(self._new_btn)
         self._export_btn = QPushButton("Export")
         self._export_btn.setFixedWidth(64)
-        self._export_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._export_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
         self._export_btn.clicked.connect(self._on_export_current)
         btn_layout.addWidget(self._export_btn)
         self._settings_btn = QPushButton("Settings")
         self._settings_btn.setFixedWidth(64)
-        self._settings_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._settings_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
         self._settings_btn.clicked.connect(self._on_settings)
         btn_layout.addWidget(self._settings_btn)
         self._mutations_btn = QPushButton("Mutations")
         self._mutations_btn.setFixedWidth(64)
-        self._mutations_btn.setStyleSheet(_SMALL_BTN_STYLE)
+        self._mutations_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
         self._mutations_btn.setCheckable(True)
         self._mutations_btn.clicked.connect(self._on_toggle_mutation_log)
         self._mutations_btn.setVisible(False)  # shown when first mutation is recorded
         btn_layout.addWidget(self._mutations_btn)
+
+        self._tools_btn = QPushButton("Tools")
+        self._tools_btn.setFixedWidth(64)
+        self._tools_btn.setStyleSheet(maybe_host_stylesheet(_SMALL_BTN_STYLE))
+        self._tools_btn.setCheckable(True)
+        self._tools_btn.clicked.connect(self._on_toggle_tools)
+        btn_layout.addWidget(self._tools_btn)
+
+        if self._use_native_host_theme:
+            default_btn_style = build_small_button_stylesheet(self)
+            danger_btn_style = build_small_button_stylesheet(self, danger=True)
+            self._send_btn.setStyleSheet(default_btn_style)
+            self._cancel_btn.setStyleSheet(danger_btn_style)
+            self._new_btn.setStyleSheet(default_btn_style)
+            self._export_btn.setStyleSheet(default_btn_style)
+            self._settings_btn.setStyleSheet(default_btn_style)
+            self._mutations_btn.setStyleSheet(default_btn_style)
+            self._tools_btn.setStyleSheet(default_btn_style)
 
         btn_layout.addStretch()
         return btn_layout
@@ -428,8 +589,8 @@ class RikuganPanelCore(QWidget):
         """Create a new ChatView and add it as a tab."""
         chat_view = ChatView()
         chat_view.setProperty("tab_id", tab_id)  # O(1) lookup in _tab_id_at_index
-        chat_view.tool_approval_submitted.connect(self._on_tool_approval)
-        chat_view.user_answer_submitted.connect(self._on_user_answer_submitted)
+        chat_view.set_tool_approval_callback(self._on_tool_approval)
+        chat_view.set_user_answer_callback(self._on_user_answer_submitted)
         self._chat_views[tab_id] = chat_view
         index = self._tab_widget.addTab(chat_view, label)
         self._tab_widget.setCurrentIndex(index)
@@ -514,19 +675,26 @@ class RikuganPanelCore(QWidget):
             dlg = QDialog(self)
             dlg.setWindowTitle("Export Options")
             dlg.setStyleSheet(
-                "QDialog { background: #1e1e1e; }"
-                "QLabel { color: #d4d4d4; font-size: 12px; }"
-                "QCheckBox { color: #d4d4d4; font-size: 12px; }"
+                maybe_host_stylesheet(
+                    "QDialog { background: #1e1e1e; }"
+                    "QLabel { color: #d4d4d4; font-size: 12px; }"
+                    "QCheckBox { color: #d4d4d4; font-size: 12px; }"
+                )
             )
             layout = QVBoxLayout(dlg)
             cb = QCheckBox(f"Include subagent logs ({len(session.subagent_logs)} subagent runs)")
             cb.setChecked(True)
             layout.addWidget(cb)
-            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons = QDialogButtonBox(
+                qt_flags(
+                    QDialogButtonBox.StandardButton.Ok,
+                    QDialogButtonBox.StandardButton.Cancel,
+                )
+            )
             buttons.accepted.connect(dlg.accept)
             buttons.rejected.connect(dlg.reject)
             layout.addWidget(buttons)
-            if not dlg.exec():
+            if not qt_run(dlg):
                 return
             include_subagents = cb.isChecked()
 
@@ -611,6 +779,7 @@ class RikuganPanelCore(QWidget):
         if tab_id is None:
             return
         self._ctrl.switch_tab(tab_id)
+        self._restore_messages_if_needed(tab_id)
         self._update_token_display()
 
     def _tab_id_at_index(self, index: int) -> str | None:
@@ -630,6 +799,15 @@ class RikuganPanelCore(QWidget):
     def _active_chat_view(self) -> ChatView | None:
         """Return the ChatView for the currently active tab."""
         return self._chat_views.get(self._ctrl.active_tab_id)
+
+    def _restore_messages_if_needed(self, tab_id: str) -> None:
+        """Replay deferred restored messages for a tab the first time it is shown."""
+        messages = self._pending_restore_messages.pop(tab_id, None)
+        if not messages:
+            return
+        chat_view = self._chat_views.get(tab_id)
+        if chat_view is not None:
+            chat_view.restore_from_messages(messages)
 
     def _update_token_display(self, token_count: int | None = None) -> None:
         """Update the context bar token display with context window percentage."""
@@ -674,6 +852,8 @@ class RikuganPanelCore(QWidget):
             return
         self._is_shutdown = True
         try:
+            tools_form = getattr(self, "_tools_form", None)
+            tools_panel = getattr(self, "_tools_panel", None)
             self._stop_poll_timer()
             self._stop_skills_refresh_timer()
             _SharedSpinnerTimer.shutdown()
@@ -684,6 +864,17 @@ class RikuganPanelCore(QWidget):
             if self._ui_hooks:
                 self._ui_hooks.unhook()
                 self._ui_hooks = None
+            if tools_form is not None:
+                tools_form.hide()
+                # In IDA mode, hide() orphans the tools widget via
+                # OnClose -> setParent(None).  Schedule it for deletion
+                # while Python is still alive to prevent crashes during
+                # QApplication::~QApplication() exit cleanup.
+                if tools_panel is not None:
+                    tools_panel.deleteLater()
+            elif tools_panel is not None:
+                tools_panel.close()
+            self._tools_panel = None
             self._ctrl.shutdown()
         except Exception as e:
             log_error(f"Panel teardown error: {e}")
@@ -705,6 +896,7 @@ class RikuganPanelCore(QWidget):
             if w:
                 w.deleteLater()
         self._chat_views.clear()
+        self._pending_restore_messages.clear()
         # Create default tab and try to restore saved sessions
         self._create_tab(self._ctrl.active_tab_id, "New Chat")
         self._try_restore_session()
@@ -753,14 +945,16 @@ class RikuganPanelCore(QWidget):
 
     def _on_settings(self) -> None:
         try:
+            from .settings_dialog import SettingsDialog
+
             dlg = SettingsDialog(
                 self._config,
                 registry=self._ctrl.provider_registry,
                 tool_registry=self._ctrl.tool_registry,
             )
-            result = dlg.exec_()
+            result = qt_run(dlg)
             if result:
-                self._config.save()
+                self._config.save(password=dlg.encryption_password)
                 self._ctrl.update_settings()
                 self._ctrl.reload_mcp()
                 if self._context_bar is not None:
@@ -777,11 +971,13 @@ class RikuganPanelCore(QWidget):
         dlg.setText("Start a new chat? Current conversation will be saved.")
         dlg.setInformativeText(f"Context usage: {context_pct}%")
         dlg.setStyleSheet(
-            "QMessageBox { background: #1e1e1e; color: #d4d4d4; }"
-            "QLabel { color: #d4d4d4; font-size: 12px; }"
-            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-            "border-radius: 4px; padding: 6px 16px; font-size: 11px; min-width: 80px; }"
-            "QPushButton:hover { background: #3c3c3c; }"
+            maybe_host_stylesheet(
+                "QMessageBox { background: #1e1e1e; color: #d4d4d4; }"
+                "QLabel { color: #d4d4d4; font-size: 12px; }"
+                "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+                "border-radius: 4px; padding: 6px 16px; font-size: 11px; min-width: 80px; }"
+                "QPushButton:hover { background: #3c3c3c; }"
+            )
         )
         yes_btn = dlg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
         clear_btn = dlg.addButton(
@@ -790,7 +986,7 @@ class RikuganPanelCore(QWidget):
         )
         no_btn = dlg.addButton("No", QMessageBox.ButtonRole.RejectRole)
         dlg.setDefaultButton(no_btn)
-        dlg.exec_()
+        qt_run(dlg)
         clicked = dlg.clickedButton()
         if clicked is clear_btn:
             return "clear"
@@ -940,8 +1136,8 @@ class RikuganPanelCore(QWidget):
 
             for tab_id, session in restored:
                 label = self._ctrl.tab_label(tab_id)
-                cv = self._create_tab(tab_id, label)
-                cv.restore_from_messages(session.messages)
+                self._pending_restore_messages[tab_id] = session.messages
+                self._create_tab(tab_id, label)
 
             # Activate the last (most recent) tab
             if restored:
@@ -952,6 +1148,7 @@ class RikuganPanelCore(QWidget):
                         if self._tab_widget.widget(i) is last_cv:
                             self._tab_widget.setCurrentIndex(i)
                             break
+                    self._restore_messages_if_needed(last_tab_id)
                 self._update_token_display()
         else:
             # No saved sessions — try legacy single-session restore
@@ -988,6 +1185,384 @@ class RikuganPanelCore(QWidget):
         visible = not self._mutation_panel.isVisible()
         self._mutation_panel.setVisible(visible)
         self._mutations_btn.setChecked(visible)
+
+    def _on_mode_changed(self, index: int) -> None:
+        """Handle the Chat / Tools mode bar switch."""
+        self._mode_stack.setCurrentIndex(index)
+        if index == 1:
+            self._ensure_tools_initialized()
+            self._tools_btn.setChecked(True)
+        else:
+            self._tools_btn.setChecked(False)
+
+    def _on_toggle_tools(self) -> None:
+        """Toggle the Tools view (IDA-docked or embedded mode tab)."""
+        if self._tools_panel is None:
+            return
+        self._ensure_tools_initialized()
+
+        if self._tools_form is not None:
+            # IDA dockable form
+            if self._tools_form.is_visible:
+                self._tools_form.hide()
+                self._tools_btn.setChecked(False)
+            else:
+                self._tools_form.show()
+                self._tools_btn.setChecked(True)
+        else:
+            # Toggle mode bar between Chat (0) and Tools (1)
+            current = self._mode_bar.currentIndex()
+            self._mode_bar.setCurrentIndex(1 if current == 0 else 0)
+
+    def show_tools_panel(self, tab_index: int = 0) -> None:
+        """Show the tools view and switch to the given tab.
+
+        Public API used by IDA actions (Open Tools, Send to Bulk Rename).
+        """
+        if self._tools_panel is None:
+            return
+        self._ensure_tools_initialized()
+
+        if self._tools_form is not None:
+            self._tools_form.show()
+            self._tools_form.set_tab(tab_index)
+        else:
+            self._mode_bar.setCurrentIndex(1)
+            if hasattr(self._tools_panel, "_tabs"):
+                self._tools_panel._tabs.setCurrentIndex(tab_index)
+        self._tools_btn.setChecked(True)
+
+    def show_tools_with_renamer(self, address: int | None = None) -> None:
+        """Show the tools panel on the Renamer tab.
+
+        If *address* is given, filter and check that function.
+        Called from the IDA "Send to Bulk Rename" right-click action.
+        """
+        self.show_tools_panel(tab_index=0)
+        if address is not None and hasattr(self, "_bulk_renamer"):
+            self._bulk_renamer.select_and_filter_address(address)
+
+    def _ensure_tools_initialized(self) -> None:
+        """Lazily initialize tools panel contents on first open."""
+        if getattr(self, "_tools_initialized", False):
+            return
+        if self._tools_panel is None:
+            return
+        self._tools_initialized = True
+
+        from .agent_tree import AgentTreeWidget
+        from .bulk_renamer import BulkRenamerWidget
+
+        # Agent tree
+        self._agent_tree = AgentTreeWidget()
+        self._agent_tree.cancel_requested.connect(self._on_cancel_agent)
+        self._agent_tree.inject_summary_requested.connect(self._on_inject_summary)
+        self._tools_panel.set_agents_widget(self._agent_tree)
+
+        # Bulk renamer
+        self._bulk_renamer = BulkRenamerWidget()
+        self._bulk_renamer.start_requested.connect(self._on_renamer_start)
+        self._bulk_renamer.pause_requested.connect(self._on_renamer_pause)
+        self._bulk_renamer.cancel_requested.connect(self._on_renamer_cancel)
+        self._bulk_renamer.undo_requested.connect(self._on_renamer_undo)
+        self._bulk_renamer.seek_requested.connect(lambda addr: self._on_renamer_seek(addr))
+        self._tools_panel.set_renamer_widget(self._bulk_renamer)
+
+        # Create IDA dockable form wrapper if factory is available
+        if self._tools_form_factory is not None and self._tools_form is None:
+            self._tools_form = self._tools_form_factory(self._tools_panel)
+
+        # Populate bulk renamer with functions from the binary.
+        # Defer to next event-loop tick so the panel paints first.
+        QTimer.singleShot(0, self._load_renamer_functions)
+
+        # Start tools polling timer
+        self._tools_poll_timer = QTimer(self)
+        self._tools_poll_timer.setInterval(100)
+        self._tools_poll_timer.timeout.connect(self._poll_tools_events)
+        self._tools_poll_timer.start()
+
+    def _get_or_create_subagent_manager(self):
+        """Lazily create the SubagentManager."""
+        if hasattr(self, "_subagent_manager"):
+            return self._subagent_manager
+
+        from ..agent.subagent_manager import SubagentManager
+
+        provider = self._ctrl.get_provider()
+        if provider is None:
+            return None
+        self._subagent_manager = SubagentManager(
+            provider=provider,
+            tool_registry=self._ctrl.get_tool_registry(),
+            config=self._config,
+            host_name=self._ctrl.host_name,
+            skill_registry=getattr(self._ctrl, "_skill_registry", None),
+        )
+        return self._subagent_manager
+
+    def _get_or_create_renamer_engine(self, batch_size: int, max_workers: int):
+        """Create a BulkRenamerEngine for the current session."""
+        from ..agent.bulk_renamer import BulkRenamerEngine
+
+        provider = self._ctrl.get_provider()
+        if provider is None:
+            return None
+        return BulkRenamerEngine(
+            provider=provider,
+            tool_registry=self._ctrl.get_tool_registry(),
+            config=self._config,
+            host_name=self._ctrl.host_name,
+            skill_registry=getattr(self._ctrl, "_skill_registry", None),
+            batch_size=batch_size,
+            max_workers=max_workers,
+            subagent_manager=self._get_or_create_subagent_manager(),
+        )
+
+    def _load_renamer_functions(self) -> None:
+        """Populate the bulk renamer widget with functions from the binary.
+
+        Fetches pages of functions one at a time via QTimer so the UI thread
+        stays responsive between pages (avoids blocking on large binaries).
+        """
+        if not hasattr(self, "_bulk_renamer"):
+            return
+
+        tool_registry = self._ctrl.get_tool_registry()
+        defn = tool_registry.get("list_functions")
+        if defn is None or defn.handler is None:
+            log_info("list_functions tool not available — renamer table will be empty")
+            return
+
+        # State for the incremental page fetcher
+        self._renamer_load_funcs: list[dict] = []
+        self._renamer_load_offset = 0
+        self._renamer_load_batch = 500
+        self._renamer_load_defn = defn
+
+        self._renamer_fetch_timer = QTimer(self)
+        self._renamer_fetch_timer.setInterval(0)
+        self._renamer_fetch_timer.timeout.connect(self._fetch_renamer_page)
+        self._renamer_fetch_timer.start()
+
+    def _fetch_renamer_page(self) -> None:
+        """Fetch one page of functions and schedule the next or finish."""
+        defn = self._renamer_load_defn
+        offset = self._renamer_load_offset
+        batch = self._renamer_load_batch
+
+        try:
+            raw = defn.handler(offset=offset, limit=batch)
+        except Exception as e:
+            log_error(f"list_functions failed at offset {offset}: {e}")
+            raw = None
+
+        page_count = 0
+        if raw:
+            for line in raw.splitlines():
+                m = re.match(r"\s*0x([0-9a-fA-F]+)\s+(.+)", line)
+                if m:
+                    self._renamer_load_funcs.append(
+                        {
+                            "address": int(m.group(1), 16),
+                            "name": m.group(2).strip(),
+                            "is_import": False,
+                            "instruction_count": 0,
+                        }
+                    )
+                    page_count += 1
+
+        if page_count >= batch:
+            # More pages to fetch
+            self._renamer_load_offset += batch
+            return
+
+        # All pages fetched — stop timer and load into widget
+        self._renamer_fetch_timer.stop()
+        self._renamer_fetch_timer.deleteLater()
+        self._renamer_fetch_timer = None
+
+        functions = self._renamer_load_funcs
+
+        # Approximate function size from consecutive addresses
+        for i in range(len(functions) - 1):
+            functions[i]["instruction_count"] = functions[i + 1]["address"] - functions[i]["address"]
+
+        if functions:
+            self._bulk_renamer.load_functions(functions)
+            log_info(f"Loaded {len(functions)} functions into bulk renamer")
+        else:
+            log_info("No functions found for bulk renamer")
+
+        # Clean up temporary state
+        self._renamer_load_funcs = []
+        self._renamer_load_defn = None
+
+    # --- Tools panel event handlers ---
+
+    def _on_cancel_agent(self, agent_id: str) -> None:
+        """Handle agent cancel request from AgentTreeWidget."""
+        mgr = self._get_or_create_subagent_manager()
+        if mgr is not None:
+            mgr.cancel(agent_id)
+
+    def _on_inject_summary(self, agent_id: str) -> None:
+        """Inject a completed agent's summary into the active chat."""
+        mgr = self._get_or_create_subagent_manager()
+        if mgr is None:
+            return
+        info = mgr.get(agent_id)
+        if info is None or not info.summary:
+            return
+        elapsed = (info.completed_at or info.created_at) - info.created_at
+        text = (
+            f"[Subagent \u201c{info.name}\u201d completed ({info.turn_count} turns, {elapsed:.0f}s)]\n\n{info.summary}"
+        )
+        self._start_agent(text)
+
+    def _on_renamer_start(self, jobs, mode, batch_size, max_concurrent) -> None:
+        """Handle bulk renamer start request."""
+        from ..agent.bulk_renamer import RenameJob
+
+        engine = self._get_or_create_renamer_engine(batch_size, max_concurrent)
+        if engine is None:
+            log_error("Cannot start renamer: LLM provider not available")
+            return
+        rename_jobs = [RenameJob(address=j["address"], current_name=j["current_name"]) for j in jobs]
+        engine.enqueue(rename_jobs)
+        self._renamer_engine = engine
+        engine.start_renaming(deep=(mode == "deep"))
+
+    def _on_renamer_pause(self) -> None:
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            if engine._paused.is_set():
+                engine.pause()
+            else:
+                engine.resume()
+
+    def _on_renamer_cancel(self) -> None:
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            engine.cancel_renaming()
+
+    def _on_renamer_undo(self) -> None:
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is None:
+            return
+        # undo_all calls tool_registry.execute which goes through
+        # TPE + idasync — must run off the main thread to avoid deadlock.
+        threading.Thread(target=engine.undo_all, daemon=True, name="rikugan-undo-renames").start()
+
+    def _on_renamer_seek(self, address: int) -> None:
+        """Navigate the host disassembly view to the given address."""
+        from ..core.host import navigate_to
+
+        navigate_to(address)
+
+    def _poll_tools_events(self) -> None:
+        """Poll all tools subsystems for events."""
+        if self._is_shutdown:
+            return
+
+        # Poll subagent manager events
+        mgr = getattr(self, "_subagent_manager", None)
+        if mgr is not None:
+            for _ in range(10):
+                event = mgr.poll_event()
+                if event is None:
+                    break
+                # Update agent tree
+                if hasattr(self, "_agent_tree"):
+                    from .agent_tree import AgentInfo
+
+                    meta = event.metadata or {}
+                    agent_id = meta.get("agent_id", "")
+                    info = mgr.get(agent_id)
+                    if info is not None:
+                        elapsed = (info.completed_at or time.time()) - info.created_at
+                        self._agent_tree.update_agent(
+                            AgentInfo(
+                                agent_id=info.id,
+                                name=info.name,
+                                agent_type=info.agent_type,
+                                status=info.status.value.upper(),
+                                turns=info.turn_count,
+                                elapsed_seconds=elapsed,
+                                summary=info.summary,
+                                category=info.category,
+                            )
+                        )
+                # Show in chat for spawned/completed/failed — but skip
+                # bulk_rename agents to avoid polluting the conversation.
+                if event.type in (
+                    TurnEventType.SUBAGENT_SPAWNED,
+                    TurnEventType.SUBAGENT_COMPLETED,
+                    TurnEventType.SUBAGENT_FAILED,
+                ):
+                    is_bulk = info is not None and info.category == "bulk_rename"
+                    if not is_bulk:
+                        chat_view = self._active_chat_view()
+                        if chat_view is not None:
+                            chat_view.handle_event(event)
+
+            # Refresh elapsed time for all RUNNING agents (~1 Hz, not every tick)
+            now = time.time()
+            last_sweep = getattr(self, "_last_agent_sweep", 0.0)
+            if hasattr(self, "_agent_tree") and (now - last_sweep) >= 1.0:
+                self._last_agent_sweep = now
+                from .agent_tree import AgentInfo
+
+                for info in mgr.list_all():
+                    if info.status.value == "running":
+                        elapsed = now - info.created_at
+                        self._agent_tree.update_agent(
+                            AgentInfo(
+                                agent_id=info.id,
+                                name=info.name,
+                                agent_type=info.agent_type,
+                                status=info.status.value.upper(),
+                                turns=info.turn_count,
+                                elapsed_seconds=elapsed,
+                                summary=info.summary,
+                                category=info.category,
+                            )
+                        )
+
+        # Poll bulk renamer events
+        engine = getattr(self, "_renamer_engine", None)
+        if engine is not None:
+            from ..agent.bulk_renamer import RenameEventType
+
+            for _ in range(20):
+                rename_event = engine.poll_event()
+                if rename_event is None:
+                    break
+                if hasattr(self, "_bulk_renamer"):
+                    _RENAME_STATUS_MAP = {
+                        RenameEventType.JOB_STARTED: "analyzing",
+                        RenameEventType.JOB_COMPLETED: "renamed",
+                        RenameEventType.JOB_ERROR: "error",
+                    }
+                    if rename_event.type in _RENAME_STATUS_MAP:
+                        status = _RENAME_STATUS_MAP[rename_event.type]
+                        # Undo: JOB_COMPLETED with empty new_name means reverted
+                        if rename_event.type == RenameEventType.JOB_COMPLETED and not rename_event.new_name:
+                            status = "reverted"
+                        self._bulk_renamer.update_job(
+                            rename_event.address,
+                            rename_event.new_name,
+                            status,
+                            rename_event.error,
+                        )
+                    if rename_event.type in (
+                        RenameEventType.BATCH_PROGRESS,
+                        RenameEventType.ALL_DONE,
+                    ):
+                        self._bulk_renamer.set_progress(
+                            rename_event.completed,
+                            rename_event.total,
+                        )
 
     def _on_undo_requested(self, count: int) -> None:
         """Handle undo request from the mutation log panel."""

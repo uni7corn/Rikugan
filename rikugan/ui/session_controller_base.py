@@ -91,12 +91,12 @@ class SessionControllerBase:
                 return
             self._mcp_manager.load_config()
 
-            # Load enabled external MCP servers
-            from ..core.external_sources import discover_all_external_mcp
-
-            external_mcp = discover_all_external_mcp()
             enabled_set = set(self.config.enabled_external_mcp)
             if enabled_set:
+                # Load enabled external MCP servers only when explicitly configured.
+                from ..core.external_sources import discover_all_external_mcp
+
+                external_mcp = discover_all_external_mcp()
                 for source_key, servers in external_mcp.items():
                     enabled = [s for s in servers if f"{source_key}:{s.name}" in enabled_set]
                     if enabled:
@@ -246,6 +246,27 @@ class SessionControllerBase:
 
     def get_runner(self) -> BackgroundAgentRunner | None:
         return self._runner
+
+    def get_provider(self) -> Any:
+        """Create and return an LLMProvider instance for the current config."""
+        if not self._runtime_init_done.is_set():
+            self._runtime_init_done.wait(timeout=10.0)
+        try:
+            provider = self._provider_registry.get_or_create(
+                self.config.provider.name,
+                api_key=self.config.provider.api_key,
+                api_base=self.config.provider.api_base,
+                model=self.config.provider.model,
+            )
+            provider.ensure_ready()
+            return provider
+        except Exception as e:
+            log_error(f"Provider creation failed: {e}")
+            return None
+
+    def get_tool_registry(self) -> ToolRegistry:
+        """Return the tool registry."""
+        return self._tool_registry
 
     def start_agent(self, user_message: str) -> str | None:
         """Create provider + agent loop and start the background runner."""

@@ -32,6 +32,7 @@ from .qt_compat import (
     QVBoxLayout,
     QWidget,
 )
+from .styles import maybe_host_stylesheet
 
 _DEFAULT_MINIMAX_URL = "https://api.minimax.io/anthropic"
 _CUSTOM_PROVIDER_URL_PLACEHOLDER = "https://api.example.com/v1"
@@ -139,7 +140,7 @@ class _AddProviderDialog(QDialog):
         layout.addLayout(form)
 
         self._error_label = QLabel()
-        self._error_label.setStyleSheet("color: #f44747; font-size: 11px;")
+        self._error_label.setStyleSheet(maybe_host_stylesheet("color: #f44747; font-size: 11px;"))
         self._error_label.hide()
         layout.addWidget(self._error_label)
 
@@ -196,6 +197,7 @@ class SettingsDialog(QDialog):
         self._model_restore_hint: str = self._config.provider.model.strip()
         self._shown = False
         self._closed = False
+        self.encryption_password: str = ""
         self.setWindowTitle("Rikugan Settings")
         screen = QApplication.primaryScreen()
         if screen:
@@ -264,6 +266,16 @@ class SettingsDialog(QDialog):
         provider_group = QGroupBox("LLM Provider")
         provider_form = QFormLayout(provider_group)
 
+        warnings = self._registry.dependency_warnings()
+        self._dependency_label = QLabel()
+        self._dependency_label.setWordWrap(True)
+        self._dependency_label.setStyleSheet(maybe_host_stylesheet("color: #f5d98b; font-size: 11px;"))
+        if warnings:
+            self._dependency_label.setText("Warnings: " + " ".join(warnings))
+            provider_form.addRow(self._dependency_label)
+        else:
+            self._dependency_label.hide()
+
         provider_form.addRow("Provider:", self._build_provider_row())
 
         # API key — only show explicit user keys, NOT auto-resolved OAuth tokens
@@ -276,6 +288,17 @@ class SettingsDialog(QDialog):
         key_layout.addWidget(self._auth_status)
         provider_form.addRow("API Key:", key_layout)
 
+        # OAuth checkbox — controls keychain autoload
+        self._oauth_cb = QCheckBox("Use OAuth from Claude Code (macOS Keychain)")
+        self._oauth_cb.setChecked(self._config.oauth_consent_accepted)
+        self._oauth_cb.setVisible(self._config.provider.name == "anthropic")
+        self._oauth_cb.setToolTip(
+            "Auto-load your Claude Code OAuth token from the macOS Keychain.\n"
+            "Requires accepting Anthropic's credential use policy."
+        )
+        self._oauth_cb.toggled.connect(self._on_oauth_toggled)
+        provider_form.addRow("", self._oauth_cb)
+
         self._api_base_edit = QLineEdit(self._config.provider.api_base)
         self._api_base_edit.setPlaceholderText("Custom endpoint URL (optional)")
         provider_form.addRow("API Base:", self._api_base_edit)
@@ -286,7 +309,7 @@ class SettingsDialog(QDialog):
 
     def _build_provider_row(self) -> QHBoxLayout:
         """Build the provider combo + add/remove buttons row."""
-        btn_style = (
+        btn_style = maybe_host_stylesheet(
             "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
             "border-radius: 4px; font-size: 13px; font-weight: bold; }"
             "QPushButton:hover { background: #3c3c3c; }"
@@ -327,15 +350,17 @@ class SettingsDialog(QDialog):
         self._fetch_btn = QPushButton("Refresh")
         self._fetch_btn.setFixedWidth(70)
         self._fetch_btn.setStyleSheet(
-            "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
-            "border-radius: 4px; padding: 4px; font-size: 11px; }"
-            "QPushButton:hover { background: #3c3c3c; }"
+            maybe_host_stylesheet(
+                "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
+                "border-radius: 4px; padding: 4px; font-size: 11px; }"
+                "QPushButton:hover { background: #3c3c3c; }"
+            )
         )
         self._fetch_btn.clicked.connect(self._fetch_models)
         model_layout.addWidget(self._fetch_btn)
 
         self._model_status = QLabel()
-        self._model_status.setStyleSheet("color: #808080; font-size: 10px;")
+        self._model_status.setStyleSheet(maybe_host_stylesheet("color: #808080; font-size: 10px;"))
         self._model_status.setWordWrap(True)
         model_layout.addWidget(self._model_status)
         return model_layout
@@ -403,6 +428,28 @@ class SettingsDialog(QDialog):
             "When enabled, rate-limit retries show a subtle text indicator instead of red error messages."
         )
         behavior_form.addRow(self._silent_retry_cb)
+
+        # --- Context preservation ---
+        self._preserve_context_cb = QCheckBox("Preserve full context (disable tool result truncation)")
+        self._preserve_context_cb.setChecked(self._config.preserve_context)
+        self._preserve_context_cb.setToolTip(
+            "Disables tool result truncation and message trimming. "
+            "Enable for deep RE sessions where losing decompilation context is worse than higher token cost."
+        )
+        behavior_form.addRow(self._preserve_context_cb)
+
+        # --- API key encryption ---
+        from ..core.crypto import is_available as crypto_available
+
+        self._encrypt_keys_cb = QCheckBox("Encrypt API keys with password")
+        self._encrypt_keys_cb.setChecked(self._config.encrypt_api_keys)
+        self._encrypt_keys_cb.setEnabled(crypto_available())
+        self._encrypt_keys_cb.setToolTip(
+            "Encrypt all stored API keys with a password.\nYou must enter this password each time Rikugan starts."
+            if crypto_available()
+            else "Requires the 'cryptography' package (pip install cryptography)."
+        )
+        behavior_form.addRow(self._encrypt_keys_cb)
 
         return behavior_group
 
@@ -489,6 +536,9 @@ class SettingsDialog(QDialog):
         if provider == "ollama" and not self._api_base_edit.text().strip():
             self._api_base_edit.setText(_PROVIDER_BASES["ollama"])
 
+        # OAuth checkbox only visible for Anthropic
+        self._oauth_cb.setVisible(provider == "anthropic")
+
         # Update placeholder
         if provider == "anthropic":
             self._api_key_edit.setPlaceholderText("sk-... or leave empty for OAuth auto-detect")
@@ -507,12 +557,30 @@ class SettingsDialog(QDialog):
         self._update_auth_status()
         self._fetch_models()
 
+    def _on_oauth_toggled(self, checked: bool) -> None:
+        """Handle the OAuth checkbox toggle."""
+        if checked and not self._config.oauth_consent_accepted:
+            from .oauth_consent import show_oauth_consent
+
+            choice = show_oauth_consent(parent=self)
+            if choice != "accept":
+                # User declined — uncheck without recursion
+                self._oauth_cb.blockSignals(True)
+                self._oauth_cb.setChecked(False)
+                self._oauth_cb.blockSignals(False)
+                return
+        # Update consent and refresh auth status
+        from ..providers.auth_cache import invalidate_cache, set_keychain_consent
+
+        set_keychain_consent(checked)
+        invalidate_cache()
+        self._update_auth_status()
+
     # --- Auth status ---
 
-    _OK_STYLE = "color: #4ec9b0; font-size: 11px; font-weight: bold;"
-    _ERR_STYLE = "color: #f44747; font-size: 11px;"
-
-    _HINT_STYLE = "color: #808080; font-size: 10px;"
+    _OK_STYLE = maybe_host_stylesheet("color: #4ec9b0; font-size: 11px; font-weight: bold;")
+    _ERR_STYLE = maybe_host_stylesheet("color: #f44747; font-size: 11px;")
+    _HINT_STYLE = maybe_host_stylesheet("color: #808080; font-size: 10px;")
 
     def _update_auth_status(self) -> None:
         provider_name = self._provider_combo.currentText()
@@ -584,10 +652,10 @@ class SettingsDialog(QDialog):
 
         if models:
             self._model_status.setText(f"{len(models)} models")
-            self._model_status.setStyleSheet("color: #4ec9b0; font-size: 10px;")
+            self._model_status.setStyleSheet(maybe_host_stylesheet("color: #4ec9b0; font-size: 10px;"))
         else:
             self._model_status.setText("Type model name manually")
-            self._model_status.setStyleSheet("color: #808080; font-size: 10px;")
+            self._model_status.setStyleSheet(maybe_host_stylesheet("color: #808080; font-size: 10px;"))
 
         # Auto-fill generation defaults based on selected model
         self._update_generation_defaults()
@@ -595,14 +663,19 @@ class SettingsDialog(QDialog):
     def _on_fetch_error(self, error: str) -> None:
         self._fetch_btn.setEnabled(True)
         self._model_status.setText(error)
-        self._model_status.setStyleSheet("color: #f44747; font-size: 10px;")
+        self._model_status.setStyleSheet(maybe_host_stylesheet("color: #f44747; font-size: 10px;"))
         self._model_restore_hint = ""
 
     def _update_generation_defaults(self) -> None:
         model_id = self._get_selected_model_id()
         for m in self._fetched_models:
             if m.id == model_id:
-                self._context_spin.setValue(m.context_window)
+                # Only apply model defaults when the user selected a
+                # different model.  If the model matches the saved config,
+                # the user may have intentionally customized context_window
+                # — don't overwrite it with the model's default.
+                if model_id != self._config.provider.model:
+                    self._context_spin.setValue(m.context_window)
                 self._max_tokens_spin.setValue(min(m.max_output_tokens, 16384))
                 break
 
@@ -670,7 +743,69 @@ class SettingsDialog(QDialog):
 
     # --- Accept ---
 
+    def _prompt_password(self, title: str, confirm: bool = False) -> str:
+        """Show a modal password dialog. Returns empty string on cancel."""
+        from .qt_compat import QMessageBox
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumWidth(320)
+        layout = QVBoxLayout(dlg)
+
+        pw_edit = QLineEdit()
+        pw_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        pw_edit.setPlaceholderText("Password")
+        layout.addWidget(pw_edit)
+
+        pw_confirm: QLineEdit | None = None
+        if confirm:
+            pw_confirm = QLineEdit()
+            pw_confirm.setEchoMode(QLineEdit.EchoMode.Password)
+            pw_confirm.setPlaceholderText("Confirm password")
+            layout.addWidget(pw_confirm)
+
+        from .qt_compat import QDialogButtonBox, qt_flags, qt_run
+
+        buttons = QDialogButtonBox(
+            qt_flags(
+                QDialogButtonBox.StandardButton.Ok,
+                QDialogButtonBox.StandardButton.Cancel,
+            ),
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if qt_run(dlg) != QDialog.DialogCode.Accepted:
+            return ""
+
+        password = pw_edit.text()
+        if not password:
+            QMessageBox.warning(self, title, "Password cannot be empty.")
+            return ""
+        if confirm and pw_confirm and pw_confirm.text() != password:
+            QMessageBox.warning(self, title, "Passwords do not match.")
+            return ""
+        return password
+
     def _on_accept(self) -> None:
+        api_key = self._api_key_edit.text().strip()
+
+        # If the user pasted an OAuth token with the checkbox unchecked,
+        # show the consent dialog.  Use parent=None to avoid nesting a
+        # modal inside this already-modal settings dialog.
+        if api_key.startswith("sk-ant-oat") and not self._oauth_cb.isChecked():
+            from .oauth_consent import show_oauth_consent
+
+            choice = show_oauth_consent(parent=None)
+            if choice == "accept":
+                self._oauth_cb.blockSignals(True)
+                self._oauth_cb.setChecked(True)
+                self._oauth_cb.blockSignals(False)
+            else:
+                self._api_key_edit.clear()
+                return
+
         self._config.provider.name = self._provider_combo.currentText()
         self._config.provider.model = self._get_selected_model_id()
         # ONLY save what the user explicitly typed — never save auto-resolved OAuth tokens
@@ -684,6 +819,37 @@ class SettingsDialog(QDialog):
         self._config.exploration_turn_limit = self._explore_turns_spin.value()
         self._config.max_retries = self._max_retries_spin.value()
         self._config.silent_retry_mode = self._silent_retry_cb.isChecked()
+        self._config.preserve_context = self._preserve_context_cb.isChecked()
+        self._config.oauth_consent_accepted = self._oauth_cb.isChecked()
+
+        # --- API key encryption handling ---
+        wants_encrypt = self._encrypt_keys_cb.isChecked()
+        password = ""
+        if wants_encrypt:
+            if self._config.encrypt_api_keys:
+                # Already encrypted — need current password to re-encrypt
+                password = self._prompt_password("Enter encryption password", confirm=False)
+            else:
+                # Newly enabling — prompt for new password with confirmation
+                password = self._prompt_password("Set encryption password", confirm=True)
+            if not password:
+                return  # user cancelled
+        elif self._config.encrypt_api_keys:
+            # Disabling encryption — need current password to verify ownership
+            password = self._prompt_password("Enter current password to disable encryption", confirm=False)
+            if not password:
+                return
+            # Verify the password is correct before disabling
+            if self._config.has_encrypted_keys():
+                if not self._config.decrypt_stored_keys(password):
+                    from .qt_compat import QMessageBox
+
+                    QMessageBox.warning(self, "Wrong Password", "Incorrect password.")
+                    return
+            password = ""  # save unencrypted
+
+        self._config.encrypt_api_keys = wants_encrypt
+        self.encryption_password = password  # consumed by caller's save()
 
         # Apply new tab settings
         self._skills_tab.apply_to_config(self._config)

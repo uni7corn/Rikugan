@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from ...core.config import RikuganConfig
 from ...core.logging import log_debug
 from ...core.profile import (
-    _BUILTIN_PROFILES,
+    BUILTIN_PROFILES,
     IOC_FILTER_CATEGORIES,
     AnalysisProfile,
     get_profile,
@@ -31,17 +31,18 @@ from ..qt_compat import (
     QVBoxLayout,
     QWidget,
 )
+from ..styles import maybe_host_stylesheet
 
 if TYPE_CHECKING:
     from ..settings_service import SettingsService
 
-_BTN_STYLE = (
+_BTN_STYLE = maybe_host_stylesheet(
     "QPushButton { background: #2d2d2d; color: #d4d4d4; border: 1px solid #3c3c3c; "
     "border-radius: 4px; padding: 4px 12px; font-size: 11px; }"
     "QPushButton:hover { background: #3c3c3c; }"
 )
 
-_GROUP_STYLE = (
+_GROUP_STYLE = maybe_host_stylesheet(
     "QGroupBox { font-weight: bold; border: 1px solid #3c3c3c; "
     "border-radius: 4px; margin-top: 14px; padding-top: 4px; }"
     "QGroupBox::title { subcontrol-origin: margin; left: 10px; "
@@ -268,11 +269,11 @@ class ProfilesTab(QWidget):
             for cat_name, tool_names in categories:
                 col = cols[col_idx % n_cols]
                 header = QLabel(f"<b>{cat_name}</b>")
-                header.setStyleSheet("font-size: 10px; color: #888; margin-top: 6px;")
+                header.setStyleSheet(maybe_host_stylesheet("font-size: 10px; color: #888; margin-top: 6px;"))
                 col.addWidget(header)
                 for tname in tool_names:
                     cb = QCheckBox(tname)
-                    cb.setStyleSheet("font-size: 11px;")
+                    cb.setStyleSheet(maybe_host_stylesheet("font-size: 11px;"))
                     self._denied_tool_cbs[tname] = cb
                     col.addWidget(cb)
                 col_idx += 1
@@ -346,7 +347,7 @@ class ProfilesTab(QWidget):
     def _load_profile(self, name: str) -> None:
         self._displayed_profile = name
         profile = get_profile(name, self._custom_profiles)
-        is_builtin = name in _BUILTIN_PROFILES
+        is_builtin = name in BUILTIN_PROFILES
 
         self._desc_edit.setPlainText(profile.description or "")
         self._hide_metadata_cb.setChecked(profile.hide_binary_metadata)
@@ -407,7 +408,7 @@ class ProfilesTab(QWidget):
 
     def _save_current_to_working_copy(self) -> None:
         name = self._displayed_profile
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
 
         ioc_filters = {key: cb.isChecked() for key, cb in self._ioc_checkboxes.items()}
@@ -444,7 +445,7 @@ class ProfilesTab(QWidget):
         }
 
         name = self._profile_combo.currentText()
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
 
         profile_data = self._custom_profiles.get(name, {})
@@ -465,7 +466,7 @@ class ProfilesTab(QWidget):
         if row < 0:
             return
         name = self._profile_combo.currentText()
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
         profile_data = self._custom_profiles.get(name, {})
         rules = list(profile_data.get("custom_filter_rules", []))
@@ -484,7 +485,7 @@ class ProfilesTab(QWidget):
         if not result:
             return
         name, desc = result
-        if name in _BUILTIN_PROFILES or name in self._custom_profiles:
+        if name in BUILTIN_PROFILES or name in self._custom_profiles:
             QMessageBox.warning(self, "Error", f"Profile '{name}' already exists.")
             return
         p = AnalysisProfile(name=name, description=desc)
@@ -502,7 +503,7 @@ class ProfilesTab(QWidget):
         if not result:
             return
         name, desc = result
-        if name in _BUILTIN_PROFILES or name in self._custom_profiles:
+        if name in BUILTIN_PROFILES or name in self._custom_profiles:
             QMessageBox.warning(self, "Error", f"Profile '{name}' already exists.")
             return
         self._save_current_to_working_copy()
@@ -525,7 +526,7 @@ class ProfilesTab(QWidget):
 
     def _on_delete_profile(self) -> None:
         name = self._profile_combo.currentText()
-        if not name or name in _BUILTIN_PROFILES:
+        if not name or name in BUILTIN_PROFILES:
             return
         reply = QMessageBox.question(
             self,
@@ -559,7 +560,7 @@ class ProfilesTab(QWidget):
         lay.addLayout(form)
 
         error_label = QLabel()
-        error_label.setStyleSheet("color: #f44747; font-size: 11px;")
+        error_label.setStyleSheet(maybe_host_stylesheet("color: #f44747; font-size: 11px;"))
         error_label.hide()
         lay.addWidget(error_label)
 

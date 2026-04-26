@@ -40,17 +40,53 @@ class _Signal:
 
 
 _WIDGET_NAMES = [
-    "QApplication", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel",
-    "QPushButton", "QPlainTextEdit", "QScrollArea", "QFrame", "QSplitter",
-    "QDialog", "QDialogButtonBox", "QComboBox", "QLineEdit", "QSpinBox",
-    "QDoubleSpinBox", "QCheckBox", "QGroupBox", "QFormLayout",
-    "QToolButton", "QSizePolicy", "QTabWidget", "QTabBar",
-    "QFileDialog", "QMenu", "QMessageBox",
-    "QListWidget", "QListWidgetItem",
+    "QAbstractItemView",
+    "QApplication",
+    "QCheckBox",
+    "QComboBox",
+    "QDialog",
+    "QDialogButtonBox",
+    "QDoubleSpinBox",
+    "QFileDialog",
+    "QFormLayout",
+    "QFrame",
+    "QGroupBox",
+    "QHBoxLayout",
+    "QHeaderView",
+    "QLabel",
+    "QLineEdit",
+    "QListWidget",
+    "QListWidgetItem",
+    "QMenu",
+    "QMessageBox",
+    "QPlainTextEdit",
+    "QProgressBar",
+    "QPushButton",
+    "QRadioButton",
+    "QScrollArea",
+    "QSizePolicy",
+    "QSpinBox",
+    "QSplitter",
+    "QStackedWidget",
+    "QTabBar",
+    "QTableWidget",
+    "QTableWidgetItem",
+    "QTabWidget",
+    "QTextEdit",
+    "QToolButton",
+    "QTreeWidget",
+    "QTreeWidgetItem",
+    "QVBoxLayout",
+    "QWidget",
 ]
 
 _GUI_NAMES = [
-    "QSyntaxHighlighter", "QTextCharFormat", "QColor", "QFont",
+    "QColor",
+    "QFont",
+    "QIntValidator",
+    "QPalette",
+    "QSyntaxHighlighter",
+    "QTextCharFormat",
 ]
 
 
@@ -68,6 +104,7 @@ def ensure_pyside6_stubs() -> None:
     _installed = True
 
     _sentinel = type("_Qt", (), {})()
+    _sentinel.ItemDataRole = type("_ItemDataRole", (), {"UserRole": 32})()
 
     sys.modules.setdefault("PySide6", _stub_mod("PySide6"))
     sys.modules.setdefault(
@@ -75,6 +112,7 @@ def ensure_pyside6_stubs() -> None:
         _stub_mod(
             "PySide6.QtCore",
             Signal=_Signal,
+            QEvent=_qt_class("QEvent"),
             Qt=_sentinel,
             QObject=_qt_class("QObject"),
             QTimer=_qt_class("QTimer"),

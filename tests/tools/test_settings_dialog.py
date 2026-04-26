@@ -8,9 +8,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from tests.qt_stubs import ensure_pyside6_stubs
+
 ensure_pyside6_stubs()
 
-# Stub heavy dependencies
+# Stub heavy dependencies.
+# Reinstall these unconditionally because other tests may leave behind
+# incomplete stubs that are missing attributes needed here.
 for _mod_name in [
     "rikugan.core.config",
     "rikugan.core.logging",
@@ -19,16 +22,33 @@ for _mod_name in [
     "rikugan.providers.auth_cache",
     "rikugan.providers.ollama_provider",
     "rikugan.providers.registry",
+    "rikugan.ui.styles",
 ]:
-    if _mod_name not in sys.modules:
-        _stub = types.ModuleType(_mod_name)
-        for _attr in [
-            "RikuganConfig", "log_debug", "log_error", "ModelInfo",
-            "resolve_anthropic_auth", "resolve_auth_cached",
-            "DEFAULT_OLLAMA_URL", "ProviderRegistry",
-        ]:
-            setattr(_stub, _attr, MagicMock())
-        sys.modules[_mod_name] = _stub
+    _stub = types.ModuleType(_mod_name)
+    for _attr in [
+        "RikuganConfig",
+        "log_debug",
+        "log_error",
+        "log_info",
+        "log_warning",
+        "ModelInfo",
+        "Role",
+        "resolve_anthropic_auth",
+        "resolve_auth_cached",
+        "DEFAULT_OLLAMA_URL",
+        "ProviderRegistry",
+        "DARK_THEME",
+        "build_theme_stylesheet",
+        "maybe_host_stylesheet",
+    ]:
+        setattr(_stub, _attr, MagicMock())
+    sys.modules[_mod_name] = _stub
+
+_styles_mod = sys.modules.get("rikugan.ui.styles")
+if _styles_mod is not None:
+    _styles_mod.maybe_host_stylesheet = lambda css: css
+    _styles_mod.build_theme_stylesheet = lambda: ""
+    _styles_mod.DARK_THEME = ""
 
 # Ensure DEFAULT_OLLAMA_URL is a string on the stub (real module already has it)
 _ollama_mod = sys.modules.get("rikugan.providers.ollama_provider")
@@ -53,12 +73,13 @@ def _resolve_auth_cached_impl(explicit_key=""):
 _ac_stub.resolve_auth_cached = _resolve_auth_cached_impl
 _ac_stub.invalidate_cache = MagicMock()
 
-from rikugan.ui.settings_dialog import _ModelFetcher, _AddProviderDialog  # noqa: E402
+from rikugan.ui.settings_dialog import _AddProviderDialog, _ModelFetcher  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # _ModelFetcher
 # ---------------------------------------------------------------------------
+
 
 class TestModelFetcherShutdown(unittest.TestCase):
     def test_shutdown_sets_alive_false(self):
@@ -114,7 +135,7 @@ class TestModelFetcherFetch(unittest.TestCase):
         fetcher.fetch("anthropic", "key", "base")
         result = fetcher.poll()
         self.assertIsNotNone(result)
-        kind, provider, msg = result
+        kind, _provider, msg = result
         self.assertEqual(kind, "error")
         self.assertIn("boom", msg)
 
@@ -131,11 +152,12 @@ class TestModelFetcherFetch(unittest.TestCase):
 # _resolve_auth_cached
 # ---------------------------------------------------------------------------
 
+
 class TestResolveAuthCached(unittest.TestCase):
     """Tests for the auth_cache module (extracted from settings_dialog)."""
 
     def _get_ac(self):
-        return sys.modules["rikugan.providers.auth_cache"]
+        return _ac_stub
 
     def setUp(self):
         ac = self._get_ac()
@@ -145,7 +167,7 @@ class TestResolveAuthCached(unittest.TestCase):
         ac = self._get_ac()
         mock_auth = MagicMock(return_value=("token", "api_key"))
         with patch.object(ac, "resolve_anthropic_auth", mock_auth):
-            result = ac.resolve_auth_cached("my-key")
+            ac.resolve_auth_cached("my-key")
         mock_auth.assert_called_once_with("my-key")
 
     def test_no_key_uses_cache_on_second_call(self):
@@ -168,7 +190,8 @@ class TestResolveAuthCached(unittest.TestCase):
 # _AddProviderDialog._validate via object.__new__
 # ---------------------------------------------------------------------------
 
-def _make_dialog(name_text: str, base_text: str, existing: list = None) -> _AddProviderDialog:
+
+def _make_dialog(name_text: str, base_text: str, existing: list | None = None) -> _AddProviderDialog:
     dlg = object.__new__(_AddProviderDialog)
     dlg._existing = {n.lower() for n in (existing or [])}
     dlg._name_edit = MagicMock()
@@ -229,8 +252,10 @@ class TestAddProviderDialogValidate(unittest.TestCase):
 # SettingsDialog logic via object.__new__
 # ---------------------------------------------------------------------------
 
+
 def _import_dialog():
     from rikugan.ui.settings_dialog import SettingsDialog
+
     return SettingsDialog
 
 
@@ -313,7 +338,7 @@ class TestSettingsDialogPollFetcher(unittest.TestCase):
 
 
 class TestSettingsDialogOnModelsReady(unittest.TestCase):
-    def _model(self, mid: str, name: str = None, ctx: int = 200000, max_out: int = 8192):
+    def _model(self, mid: str, name: str | None = None, ctx: int = 200000, max_out: int = 8192):
         m = MagicMock()
         m.id = mid
         m.name = name or mid
