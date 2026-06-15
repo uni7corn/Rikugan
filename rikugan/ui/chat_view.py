@@ -7,12 +7,15 @@ import time
 
 from ..agent.turn import TurnEvent, TurnEventType
 from ..core.types import Message, Role
+from ..state.session import INTERNAL_EVENT_CANCELLED, INTERNAL_EVENT_KEY
 from .message_widgets import (
     AssistantMessageWidget,
     ErrorMessageWidget,
     ExplorationFindingWidget,
     ExplorationPhaseWidget,
     QueuedMessageWidget,
+    ResearchNoteWidget,
+    SubagentEventWidget,
     ThinkingWidget,
     UserMessageWidget,
     UserQuestionWidget,
@@ -20,12 +23,13 @@ from .message_widgets import (
 from .plan_view import PlanView
 from .qt_compat import (
     QScrollArea,
+    QSizePolicy,
     Qt,
     QTimer,
     QVBoxLayout,
     QWidget,
-    Signal,
 )
+from .styles import build_chat_view_stylesheet
 from .tool_widgets import ToolApprovalWidget, ToolCallWidget, ToolGroupWidget
 
 _THINKING_MIN_DISPLAY_MS = 500
@@ -46,17 +50,18 @@ def _is_hidden_system_user_message(content: str) -> bool:
 class ChatView(QScrollArea):
     """Scrollable chat area that renders TurnEvents into widgets."""
 
-    tool_approval_submitted = Signal(str, str)  # (tool_call_id, "allow"/"deny")
-    user_answer_submitted = Signal(str)  # chosen option / typed answer
-
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setObjectName("chat_scroll")
+        self.setStyleSheet(build_chat_view_stylesheet(self))
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._container = QWidget()
         self._container.setObjectName("chat_container")
+        # Prevent the container from requesting more width than the viewport;
+        # this is critical for word-wrap to work inside a QScrollArea.
+        self._container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._layout.setSpacing(4)
@@ -79,29 +84,51 @@ class ChatView(QScrollArea):
         # Map tool_call_id -> group it belongs to (for result routing/status)
         self._group_map: dict[str, ToolGroupWidget] = {}
 
-        # Member timer for scroll-to-bottom
+        # Member timer for scroll-to-bottom — coalesce at 80ms to reduce
+        # layout thrashing during rapid streaming
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
-        self._scroll_timer.setInterval(50)
+        self._scroll_timer.setInterval(80)
         self._scroll_timer.timeout.connect(self._do_scroll)
+        # Auto-scroll "follow" intent. Streaming only sticks to the bottom while
+        # this is True; the user's own scrolling toggles it (scroll up to read
+        # history -> stop following; scroll back to the bottom -> resume).
+        self._follow_bottom = True
+        self._pending_force = False
+        self._programmatic_scroll = False
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
 
         # Timer for minimum thinking display duration (500ms)
         self._thinking_hide_timer = QTimer(self)
         self._thinking_hide_timer.setSingleShot(True)
         self._thinking_hide_timer.timeout.connect(self._force_hide_thinking)
 
+        # Plain Python callbacks avoid extra Qt signal traffic in the hot chat path.
+        self._tool_approval_callback = None
+        self._user_answer_callback = None
+
+    def set_tool_approval_callback(self, callback) -> None:
+        self._tool_approval_callback = callback
+
+    def set_user_answer_callback(self, callback) -> None:
+        self._user_answer_callback = callback
+
     def add_user_message(self, text: str) -> None:
-        widget = UserMessageWidget(text)
+        widget = UserMessageWidget(text, parent=self._container)
         self._insert_widget(widget)
         self._current_assistant = None
+        # Sending is an explicit action — always jump to the bottom, even if the
+        # user had scrolled up (and even though inserting this message grows the
+        # content enough that the near-bottom heuristic would otherwise fail).
+        self._scroll_to_bottom(force=True)
 
     def add_error_message(self, text: str) -> None:
-        self._insert_widget(ErrorMessageWidget(text))
+        self._insert_widget(ErrorMessageWidget(text, parent=self._container))
         self._scroll_to_bottom()
 
     def add_queued_message(self, text: str) -> None:
-        self._insert_widget(QueuedMessageWidget(text))
-        self._scroll_to_bottom()
+        self._insert_widget(QueuedMessageWidget(text, parent=self._container))
+        self._scroll_to_bottom(force=True)
 
     def remove_queued_messages(self) -> None:
         """Remove all [queued] message widgets (e.g. on cancel)."""
@@ -125,7 +152,7 @@ class ChatView(QScrollArea):
     def _show_thinking(self) -> None:
         if self._thinking is not None:
             return
-        self._thinking = ThinkingWidget()
+        self._thinking = ThinkingWidget(parent=self._container)
         self._thinking_shown_at = time.monotonic()
         self._insert_widget(self._thinking)
         self._scroll_to_bottom()
@@ -220,14 +247,25 @@ class ChatView(QScrollArea):
         ):
             self._handle_exploration_event(event)
         elif etype in (
+            TurnEventType.RESEARCH_NOTE_SAVED,
+            TurnEventType.RESEARCH_NOTE_REVIEWED,
+        ):
+            self._handle_research_event(event)
+        elif etype in (
             TurnEventType.USER_QUESTION,
             TurnEventType.SAVE_APPROVAL_REQUEST,
         ):
             self._handle_question_event(event)
+        elif etype in (
+            TurnEventType.SUBAGENT_SPAWNED,
+            TurnEventType.SUBAGENT_COMPLETED,
+            TurnEventType.SUBAGENT_FAILED,
+        ):
+            self._handle_subagent_event(event)
         elif etype == TurnEventType.ERROR:
             self._hide_thinking()
             self._reset_tool_run()
-            self._insert_widget(ErrorMessageWidget(event.error or "Unknown error"))
+            self._insert_widget(ErrorMessageWidget(event.error or "Unknown error", parent=self._container))
             self._scroll_to_bottom()
 
     def _handle_text_event(self, event: TurnEvent) -> None:
@@ -235,7 +273,9 @@ class ChatView(QScrollArea):
         self._reset_tool_run()
         if event.type == TurnEventType.TEXT_DELTA:
             if self._current_assistant is None:
-                self._current_assistant = AssistantMessageWidget()
+                self._current_assistant = AssistantMessageWidget(parent=self._container)
+                # Follow the typewriter reveal, which renders between deltas.
+                self._current_assistant.set_render_callback(self._scroll_to_bottom)
                 self._insert_widget(self._current_assistant)
             self._current_assistant.append_text(event.text)
             self._scroll_to_bottom()
@@ -248,7 +288,7 @@ class ChatView(QScrollArea):
         etype = event.type
         if etype == TurnEventType.TOOL_CALL_START:
             self._hide_thinking()
-            tw = ToolCallWidget(event.tool_name, event.tool_call_id)
+            tw = ToolCallWidget(event.tool_name, event.tool_call_id, parent=self._container)
             self._tool_widgets[event.tool_call_id] = tw
             self._register_tool_widget(event.tool_name, event.tool_call_id, tw)
             self._scroll_to_bottom()
@@ -277,8 +317,9 @@ class ChatView(QScrollArea):
                 event.tool_name,
                 event.tool_args,
                 event.text,
+                parent=self._container,
             )
-            widget.approved.connect(self._on_tool_approval)
+            widget.set_approved_callback(self._on_tool_approval)
             self._insert_widget(widget)
             self._scroll_to_bottom()
 
@@ -297,7 +338,7 @@ class ChatView(QScrollArea):
         elif etype == TurnEventType.CANCELLED:
             self._hide_thinking()
             self._reset_tool_run()
-            self._insert_widget(ErrorMessageWidget("Cancelled by user"))
+            self._insert_widget(ErrorMessageWidget("Cancelled by user", parent=self._container))
             self._scroll_to_bottom()
 
     def _handle_plan_event(self, event: TurnEvent) -> None:
@@ -305,7 +346,7 @@ class ChatView(QScrollArea):
         if etype == TurnEventType.PLAN_GENERATED:
             self._hide_thinking()
             self._reset_tool_run()
-            self._plan_view = PlanView()
+            self._plan_view = PlanView(parent=self._container)
             if event.plan_steps:
                 self._plan_view.set_plan(event.plan_steps)
 
@@ -341,6 +382,7 @@ class ChatView(QScrollArea):
                     meta.get("from_phase", ""),
                     meta.get("to_phase", ""),
                     event.text,
+                    parent=self._container,
                 )
             )
         else:  # EXPLORATION_FINDING
@@ -350,8 +392,45 @@ class ChatView(QScrollArea):
                     event.text,
                     meta.get("address"),
                     meta.get("relevance", "medium"),
+                    parent=self._container,
                 )
             )
+        self._scroll_to_bottom()
+
+    def _handle_research_event(self, event: TurnEvent) -> None:
+        meta = event.metadata
+        if event.type == TurnEventType.RESEARCH_NOTE_SAVED:
+            self._hide_thinking()
+            self._reset_tool_run()
+            self._insert_widget(
+                ResearchNoteWidget(
+                    title=event.text,
+                    genre=meta.get("genre", "general"),
+                    path=meta.get("path", ""),
+                    preview=meta.get("preview", ""),
+                    review_passed=meta.get("review_passed", True),
+                    parent=self._container,
+                )
+            )
+            self._scroll_to_bottom()
+        # RESEARCH_NOTE_REVIEWED — no separate widget, info is in the saved event
+
+    def _handle_subagent_event(self, event: TurnEvent) -> None:
+        meta = event.metadata
+        if event.type == TurnEventType.SUBAGENT_SPAWNED:
+            name = event.text
+            agent_type = meta.get("agent_type", "custom")
+            self._insert_widget(SubagentEventWidget("spawned", name, f"type: {agent_type}", parent=self._container))
+        elif event.type == TurnEventType.SUBAGENT_COMPLETED:
+            name = meta.get("name", "")
+            turns = meta.get("turn_count", 0)
+            elapsed = meta.get("elapsed", 0.0)
+            detail = f"{turns} turns, {elapsed:.0f}s"
+            self._insert_widget(SubagentEventWidget("completed", name, detail, parent=self._container))
+        elif event.type == TurnEventType.SUBAGENT_FAILED:
+            name = meta.get("name", "")
+            error = event.error or "Unknown error"
+            self._insert_widget(SubagentEventWidget("failed", name, error, parent=self._container))
         self._scroll_to_bottom()
 
     def _handle_question_event(self, event: TurnEvent) -> None:
@@ -361,23 +440,40 @@ class ChatView(QScrollArea):
             options = ["Save All", "Discard All"]
         else:  # USER_QUESTION
             options = event.metadata.get("options", [])
-        widget = UserQuestionWidget(event.text, options)
-        widget.option_selected.connect(self._on_user_answer)
+        widget = UserQuestionWidget(event.text, options, parent=self._container)
+        widget.set_option_selected_callback(self._on_user_answer)
         self._insert_widget(widget)
         self._scroll_to_bottom()
 
     def _on_tool_approval(self, tool_call_id: str, decision: str) -> None:
         """Forward tool approval decision to the panel/controller."""
-        self.tool_approval_submitted.emit(tool_call_id, decision)
+        if self._tool_approval_callback is not None:
+            self._tool_approval_callback(tool_call_id, decision)
 
     def _on_user_answer(self, answer: str) -> None:
         """Forward a button-selected answer to the panel/controller."""
-        self.user_answer_submitted.emit(answer)
+        if self._user_answer_callback is not None:
+            self._user_answer_callback(answer)
 
     def restore_from_messages(self, messages: list[Message]) -> None:
         """Replay saved Message objects into the chat view."""
         self.clear_chat()
 
+        # Disable Qt layout/paint passes for the duration of the restore.
+        # Without this each _insert_widget call triggers a full O(n) layout
+        # recalculation on the growing container, making session restore
+        # O(n²) in the number of messages.
+        self._container.setUpdatesEnabled(False)
+        try:
+            self._restore_messages_inner(messages)
+        finally:
+            self._container.setUpdatesEnabled(True)
+
+        self._current_assistant = None
+        self._reset_tool_run()
+        self._scroll_to_bottom()
+
+    def _restore_messages_inner(self, messages: list[Message]) -> None:
         for msg in messages:
             if msg.role == Role.USER:
                 if _is_hidden_system_user_message(msg.content):
@@ -387,13 +483,16 @@ class ChatView(QScrollArea):
 
             elif msg.role == Role.ASSISTANT:
                 self._reset_tool_run()
+                if msg.metadata.get(INTERNAL_EVENT_KEY) == INTERNAL_EVENT_CANCELLED:
+                    self._insert_widget(ErrorMessageWidget("Cancelled by user", parent=self._container))
+                    continue
                 if msg.content:
-                    w = AssistantMessageWidget()
+                    w = AssistantMessageWidget(parent=self._container)
                     w.set_text(msg.content)
                     self._insert_widget(w)
 
                 for tc in msg.tool_calls:
-                    tw = ToolCallWidget(tc.name, tc.id)
+                    tw = ToolCallWidget(tc.name, tc.id, parent=self._container)
                     try:
                         args_str = json.dumps(tc.arguments, indent=2)
                     except (TypeError, ValueError):
@@ -412,10 +511,6 @@ class ChatView(QScrollArea):
                     group = self._group_map.get(tr.tool_call_id)
                     if group:
                         group.notify_result(tr.is_error)
-
-        self._current_assistant = None
-        self._reset_tool_run()
-        self._scroll_to_bottom()
 
     def clear_chat(self) -> None:
         self._force_hide_thinking()
@@ -436,21 +531,64 @@ class ChatView(QScrollArea):
         idx = self._layout.count() - 1
         self._layout.insertWidget(idx, widget)
 
-    def _is_near_bottom(self) -> bool:
-        """True if the user hasn't scrolled up (within ~60px of bottom)."""
-        sb = self.verticalScrollBar()
-        return sb.maximum() - sb.value() < 60
+    def resizeEvent(self, event) -> None:
+        """Keep the container width pinned to the viewport width.
 
-    def _scroll_to_bottom(self) -> None:
-        if self._is_near_bottom():
+        QScrollArea.setWidgetResizable(True) handles this when there is no
+        horizontal scrollbar, but QLabel rich-text word-wrap still sometimes
+        requests a wider sizeHint.  Explicitly clamping here guarantees text
+        wraps to the visible area.
+        """
+        super().resizeEvent(event)
+        if self._container is not None:
+            self._container.setFixedWidth(self.viewport().width())
+
+    def _on_scroll_value_changed(self, value: int) -> None:
+        """Track the user's follow intent from their own scrolling.
+
+        Programmatic scrolls (our own ``_do_scroll``) are ignored; only a user
+        moving the scrollbar updates whether we should keep sticking to bottom.
+        """
+        if self._programmatic_scroll:
+            return
+        sb = self.verticalScrollBar()
+        self._follow_bottom = (sb.maximum() - value) <= 16
+
+    def _scroll_to_bottom(self, force: bool = False) -> None:
+        if force:
+            # Explicit user action (send/queue): re-arm follow and pin to bottom.
+            self._follow_bottom = True
+            self._pending_force = True
+            self._scroll_timer.start()
+        elif self._follow_bottom:
             self._scroll_timer.start()
 
+    def _set_scroll_value_silently(self, value: int) -> None:
+        """setValue without it being read back as a user scroll."""
+        self._programmatic_scroll = True
+        try:
+            self.verticalScrollBar().setValue(value)
+        finally:
+            self._programmatic_scroll = False
+
     def _do_scroll(self) -> None:
-        self._container.updateGeometry()
+        force = self._pending_force
+        self._pending_force = False
+        # Re-check at fire time: the user may have scrolled up during the 80ms
+        # coalescing window, in which case a non-forced scroll must not yank
+        # them back down.
+        if not force and not self._follow_bottom:
+            return
         sb = self.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._set_scroll_value_silently(sb.maximum())
+        if force:
+            # The just-inserted widget may not be laid out yet, so maximum() can
+            # be stale; re-assert once the pending layout pass completes.
+            QTimer.singleShot(0, lambda: self._set_scroll_value_silently(self.verticalScrollBar().maximum()))
 
     def shutdown(self) -> None:
         self._scroll_timer.stop()
         self._thinking_hide_timer.stop()
         self._force_hide_thinking()
+        self._tool_approval_callback = None
+        self._user_answer_callback = None

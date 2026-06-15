@@ -15,7 +15,7 @@ from rikugan.core.profile import (
     DEFAULT_PROFILE,
     IOC_FILTER_CATEGORIES,
     PRIVATE_PROFILE,
-    _BUILTIN_PROFILES,
+    BUILTIN_PROFILES,
     get_profile,
     list_profiles,
 )
@@ -44,8 +44,8 @@ class TestBuiltinProfiles(unittest.TestCase):
             )
 
     def test_builtin_profiles_dict(self):
-        self.assertIn("default", _BUILTIN_PROFILES)
-        self.assertIn("private", _BUILTIN_PROFILES)
+        self.assertIn("default", BUILTIN_PROFILES)
+        self.assertIn("private", BUILTIN_PROFILES)
 
 
 class TestToFromDict(unittest.TestCase):

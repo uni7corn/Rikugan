@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types
 import unittest
 from unittest.mock import MagicMock
 
 from tests.qt_stubs import ensure_pyside6_stubs
+
 ensure_pyside6_stubs()
 
 # Stub heavy rikugan submodules
@@ -27,39 +29,104 @@ for _mod_name in [
     "rikugan.providers.ollama_provider",
     "rikugan.providers.registry",
 ]:
-    if _mod_name not in sys.modules:
+    _stub = sys.modules.get(_mod_name)
+    if _stub is None:
         _stub = types.ModuleType(_mod_name)
-        for _attr in [
-            "DARK_THEME", "ChatView", "InputArea", "ContextBar",
-            "_SharedSpinnerTimer", "RikuganConfig",
-            "log_error", "log_info", "log_debug",
-            "TurnEvent", "TurnEventType", "MutationRecord",
-            "Role", "ModelInfo",
-            "resolve_auth_cached", "resolve_anthropic_auth",
-            "DEFAULT_OLLAMA_URL", "ProviderRegistry",
-        ]:
-            setattr(_stub, _attr, MagicMock())
         sys.modules[_mod_name] = _stub
+    for _attr in [
+        "DARK_THEME",
+        "build_chat_sidebar_stylesheet",
+        "build_chat_view_stylesheet",
+        "build_mini_tool_button_stylesheet",
+        "build_small_button_stylesheet",
+        "build_theme_stylesheet",
+        "blend_theme_color",
+        "get_chat_color_tokens",
+        "get_host_palette_colors",
+        "host_stylesheet",
+        "maybe_host_stylesheet",
+        "use_native_host_theme",
+        "ChatView",
+        "InputArea",
+        "ContextBar",
+        "_SharedSpinnerTimer",
+        "RikuganConfig",
+        "log_error",
+        "log_info",
+        "log_debug",
+        "log_warning",
+        "TurnEvent",
+        "TurnEventType",
+        "MutationRecord",
+        "Role",
+        "ModelInfo",
+        "resolve_auth_cached",
+        "resolve_anthropic_auth",
+        "DEFAULT_OLLAMA_URL",
+        "ProviderRegistry",
+    ]:
+        if not hasattr(_stub, _attr):
+            setattr(_stub, _attr, MagicMock())
 
 # Ensure DEFAULT_OLLAMA_URL is a string (used in comparisons)
 _ollama_stub = sys.modules.get("rikugan.providers.ollama_provider")
 if _ollama_stub and not isinstance(getattr(_ollama_stub, "DEFAULT_OLLAMA_URL", None), str):
     _ollama_stub.DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
+_styles_stub = sys.modules.get("rikugan.ui.styles")
+if _styles_stub is not None:
+    _styles_stub.blend_theme_color = lambda color_a, color_b, amount: color_a
+    _styles_stub.get_host_palette_colors = lambda source=None: {
+        "window": "#1e1e1e",
+        "window_text": "#d4d4d4",
+        "base": "#252526",
+        "alt_base": "#2d2d2d",
+        "text": "#d4d4d4",
+        "button": "#2d2d2d",
+        "button_text": "#d4d4d4",
+        "highlight": "#569cd6",
+        "highlight_text": "#ffffff",
+        "mid": "#808080",
+        "dark": "#1a1a1a",
+        "light": "#f3f3f3",
+    }
+    _styles_stub.get_chat_color_tokens = lambda source=None: {
+        "panel": "#1e1e1e",
+        "chat_canvas": "#202020",
+        "assistant_bg": "#252525",
+        "tool_bg": "#242424",
+        "thinking_bg": "#292929",
+        "input_bg": "#2b2b2b",
+        "text": "#d4d4d4",
+        "muted": "#888888",
+        "subtle": "#aaaaaa",
+        "border": "#555555",
+        "accent": "#569cd6",
+        "accent_text": "#ffffff",
+        "code_bg": "#303030",
+    }
+    _styles_stub.host_stylesheet = lambda custom_css, native_css="": custom_css
+    _styles_stub.build_chat_view_stylesheet = lambda source=None: ""
+
 # Force-remove any stub that test_binja_panel/test_ida_panel may have registered
 # so we always import the real module here.
 sys.modules.pop("rikugan.ui.panel_core", None)
 
 from rikugan.ui.panel_core import (  # noqa: E402
-    _export_detect_lang, _export_format_tool_args,
-    _export_format_tool_result, RikuganPanelCore,
     _TOOL_RESULT_TRUNCATE_CHARS,
+    ChatThreadList,
+    RikuganPanelCore,
+    _export_detect_lang,
+    _export_format_tool_args,
+    _export_format_tool_result,
+    _parse_function_info_result,
+    _parse_function_page,
 )
-
 
 # ---------------------------------------------------------------------------
 # _export_detect_lang
 # ---------------------------------------------------------------------------
+
 
 class TestExportDetectLang(unittest.TestCase):
     def test_arg_key_code_returns_python(self):
@@ -117,9 +184,44 @@ class TestExportDetectLang(unittest.TestCase):
         self.assertEqual(result, "c")
 
 
+class TestParseFunctionPage(unittest.TestCase):
+    def test_parses_total_and_rows(self):
+        raw = "Functions 250-252 of 1000:\n  0x401000  sub_401000\n  0x401050  main\n"
+        functions, total = _parse_function_page(raw)
+
+        self.assertEqual(total, 1000)
+        self.assertEqual(
+            functions,
+            [
+                {"address": 0x401000, "name": "sub_401000", "is_import": False, "instruction_count": 0},
+                {"address": 0x401050, "name": "main", "is_import": False, "instruction_count": 0},
+            ],
+        )
+
+    def test_parses_unknown_total(self):
+        raw = "Functions 0-1 of unknown:\n  0x10  start\n"
+        _functions, total = _parse_function_page(raw)
+        self.assertEqual(total, "unknown")
+
+
+class TestParseFunctionInfoResult(unittest.TestCase):
+    def test_parses_function_info_summary(self):
+        raw = "Name: main\nAddress: 0x401000 \u2013 0x401050\nSize: 80 bytes\nInstructions: 12\n"
+        function = _parse_function_info_result(raw)
+
+        self.assertEqual(
+            function,
+            {"address": 0x401000, "name": "main", "is_import": False, "instruction_count": 12},
+        )
+
+    def test_ignores_no_function_result(self):
+        self.assertIsNone(_parse_function_info_result("No function at 0x401000"))
+
+
 # ---------------------------------------------------------------------------
 # _export_format_tool_args
 # ---------------------------------------------------------------------------
+
 
 class TestExportFormatToolArgs(unittest.TestCase):
     def _make_tc(self, name: str, args: dict):
@@ -163,6 +265,7 @@ class TestExportFormatToolArgs(unittest.TestCase):
 # _export_format_tool_result
 # ---------------------------------------------------------------------------
 
+
 class TestExportFormatToolResult(unittest.TestCase):
     def _make_tr(self, content: str, name: str = "tool"):
         tr = MagicMock()
@@ -199,16 +302,26 @@ class TestExportFormatToolResult(unittest.TestCase):
 # Panel logic via object.__new__ injection
 # ---------------------------------------------------------------------------
 
+
 def _make_panel():
     panel = object.__new__(RikuganPanelCore)
     panel._is_shutdown = False
     panel._polling = False
     panel._pending_answer = False
+    panel._pending_answer_tabs = set()
+    panel._awaiting_approval_tabs = set()
     panel._chat_views = {}
+    panel._chat_area_stack = None
+    panel._chat_sidebar = None
+    panel._tab_status = {}
+    panel._tab_approval = {}
+    panel._pending_restore_messages = {}
     panel._context_bar = None
     panel._mutation_panel = None
     panel._skills_refresh_timer = None
     panel._poll_timer = None
+    panel._restore_timer = None
+    panel._restore_queue = None
     panel._input_area = MagicMock()
     panel._send_btn = MagicMock()
     panel._cancel_btn = MagicMock()
@@ -217,6 +330,9 @@ def _make_panel():
     panel._tab_widget = MagicMock()
     panel._tab_bar = MagicMock()
     panel._ctrl = MagicMock()
+    panel._ctrl.active_tab_id = "active"
+    panel._ctrl.is_tab_running.return_value = False
+    panel._ctrl.tab_pending_count.return_value = 0
     panel._config = MagicMock()
     panel._ui_hooks = None
     panel._awaiting_button_approval = False
@@ -301,17 +417,89 @@ class TestUpdateTabBarVisibility(unittest.TestCase):
         panel._update_tab_bar_visibility()
         panel._tab_bar.setVisible.assert_called_with(False)
 
-    def test_two_tabs_shows_bar(self):
+    def test_two_tabs_keeps_legacy_bar_hidden(self):
         panel = _make_panel()
         panel._tab_widget.count.return_value = 2
         panel._update_tab_bar_visibility()
-        panel._tab_bar.setVisible.assert_called_with(True)
+        panel._tab_bar.setVisible.assert_called_with(False)
 
     def test_zero_tabs_hides_bar(self):
         panel = _make_panel()
         panel._tab_widget.count.return_value = 0
         panel._update_tab_bar_visibility()
         panel._tab_bar.setVisible.assert_called_with(False)
+
+
+class TestChatSelection(unittest.TestCase):
+    def test_select_chat_switches_controller_even_with_hidden_tabs(self):
+        panel = _make_panel()
+        mock_view = MagicMock()
+        panel._chat_views["tid"] = mock_view
+        panel._tab_widget.count.return_value = 1
+        panel._tab_widget.widget.return_value = mock_view
+        panel._select_chat("tid")
+        panel._ctrl.switch_tab.assert_called_with("tid")
+
+
+class TestChatThreadList(unittest.TestCase):
+    def test_toolbar_actions_target_selected_chat(self):
+        sidebar = object.__new__(ChatThreadList)
+        sidebar._selected_tab_id = "tid"
+        sidebar._fork_callback = MagicMock()
+        sidebar._export_callback = MagicMock()
+        sidebar._delete_callback = MagicMock()
+
+        sidebar._on_fork_selected()
+        sidebar._on_export_selected()
+        sidebar._on_delete_selected()
+
+        sidebar._fork_callback.assert_called_once_with("tid")
+        sidebar._export_callback.assert_called_once_with("tid")
+        sidebar._delete_callback.assert_called_once_with("tid")
+
+    def test_status_badges_update_row_widget(self):
+        sidebar = object.__new__(ChatThreadList)
+        item = MagicMock()
+        row = MagicMock()
+        sidebar._items = {"tid": item}
+        sidebar._rows = {"tid": row}
+        sidebar._titles = {"tid": "Analyze auth"}
+        sidebar._details = {"tid": "2 threads"}
+        sidebar._statuses = {}
+        sidebar._search = MagicMock()
+        sidebar._search.text.return_value = ""
+
+        sidebar.set_status("tid", "approval")
+        item.setText.assert_called_with("")
+        row.set_chat.assert_called_with("Analyze auth", "2 threads", "Approval")
+        item.setSizeHint.assert_called()
+
+        sidebar.set_status("tid", "error")
+        item.setText.assert_called_with("")
+        row.set_chat.assert_called_with("Analyze auth", "2 threads", "Error")
+
+
+class TestComposerActions(unittest.TestCase):
+    def test_composer_action_builder_only_contains_send_stop_controls(self):
+        source = inspect.getsource(RikuganPanelCore._build_action_buttons)
+        self.assertIn('QPushButton("Send")', source)
+        self.assertIn('QPushButton("Stop")', source)
+        self.assertNotIn('QPushButton("New")', source)
+        self.assertNotIn('QPushButton("Export")', source)
+        self.assertNotIn('QPushButton("Settings")', source)
+        self.assertNotIn('QPushButton("Tools")', source)
+
+
+class TestOnNewTab(unittest.TestCase):
+    def test_new_tab_does_not_show_clear_context_dialog(self):
+        panel = _make_panel()
+        panel._ctrl.create_tab.return_value = "new_tid"
+        panel._create_tab = MagicMock()
+        panel._show_new_chat_dialog = MagicMock()
+        panel._on_new_tab()
+        panel._show_new_chat_dialog.assert_not_called()
+        panel._create_tab.assert_called_once_with("new_tid", "Untitled")
+        panel._ctrl.switch_tab.assert_called_with("new_tid")
 
 
 class TestOnCloseTab(unittest.TestCase):
@@ -390,7 +578,7 @@ class TestOnUndoRequested(unittest.TestCase):
         # Pre-inject a mock poll_timer so _ensure_poll_timer returns early
         panel._poll_timer = MagicMock()
         panel._on_undo_requested(2)
-        panel._ctrl.start_agent.assert_called_once_with("/undo 2")
+        panel._ctrl.start_agent.assert_called_once_with("/undo 2", tab_id="t1")
 
 
 class TestShutdownIdempotency(unittest.TestCase):
@@ -430,6 +618,24 @@ class TestStopSkillsRefreshTimer(unittest.TestCase):
         mock_timer.deleteLater.assert_called_once()
 
 
+class TestRestoreMessagesIfNeeded(unittest.TestCase):
+    def test_noop_when_no_pending_restore(self):
+        panel = _make_panel()
+        mock_view = MagicMock()
+        panel._chat_views["t1"] = mock_view
+        panel._restore_messages_if_needed("t1")
+        mock_view.restore_from_messages.assert_not_called()
+
+    def test_restores_pending_messages_once(self):
+        panel = _make_panel()
+        mock_view = MagicMock()
+        panel._chat_views["t1"] = mock_view
+        panel._pending_restore_messages["t1"] = ["m1", "m2"]
+        panel._restore_messages_if_needed("t1")
+        mock_view.restore_from_messages.assert_called_once_with(["m1", "m2"])
+        self.assertNotIn("t1", panel._pending_restore_messages)
+
+
 class TestUpdateTokenDisplay(unittest.TestCase):
     def test_noop_when_context_bar_none(self):
         panel = _make_panel()
@@ -440,7 +646,7 @@ class TestUpdateTokenDisplay(unittest.TestCase):
         panel = _make_panel()
         mock_cb = MagicMock()
         panel._context_bar = mock_cb
-        panel._config.provider.context_window = 200000
+        panel._ctrl.get_context_window.return_value = 200000
         panel._update_token_display(5000)
         mock_cb.set_tokens.assert_called_once_with(5000, 200000)
 
@@ -448,9 +654,60 @@ class TestUpdateTokenDisplay(unittest.TestCase):
         panel = _make_panel()
         mock_cb = MagicMock()
         panel._context_bar = mock_cb
-        panel._config.provider.context_window = 0
+        panel._ctrl.get_context_window.return_value = 0
         panel._update_token_display(1234)
         mock_cb.set_tokens.assert_called_once_with(1234, 0)
+
+
+class TestDontAutoLoadChats(unittest.TestCase):
+    def test_add_unloaded_chat_lists_without_chat_view(self):
+        panel = _make_panel()
+        panel._chat_sidebar = MagicMock()
+        panel._ctrl.tab_label.return_value = "My Chat"
+        panel._chat_detail = MagicMock(return_value="1 thread")
+        session = MagicMock()
+        session.messages = [MagicMock(), MagicMock()]
+
+        panel._add_unloaded_chat("tid1", session)
+
+        # Listed in the sidebar and stashed for replay, but NO ChatView built.
+        panel._chat_sidebar.add_chat.assert_called_once_with("tid1", "My Chat", "1 thread")
+        self.assertEqual(panel._pending_restore_messages["tid1"], session.messages)
+        self.assertNotIn("tid1", panel._chat_views)
+
+    def test_select_unloaded_chat_materializes_view(self):
+        panel = _make_panel()
+        panel._chat_sidebar = MagicMock()
+        panel._chat_area_stack = MagicMock()
+        panel._tab_widget.count.return_value = 0
+        panel._restore_messages_if_needed = MagicMock()
+        panel._update_token_display = MagicMock()
+        panel._set_running = MagicMock()
+        session = MagicMock()
+        session.messages = []
+        panel._ctrl.get_session.return_value = session
+        panel._ctrl.tab_label.return_value = "Lazy"
+        panel._ctrl.is_tab_running.return_value = False
+
+        def fake_create(tab_id, label, add_to_sidebar=True, select=True):
+            panel._chat_views[tab_id] = MagicMock()
+
+        panel._create_tab = MagicMock(side_effect=fake_create)
+
+        panel._select_chat("lazytid")
+
+        panel._create_tab.assert_called_once_with("lazytid", "Lazy", add_to_sidebar=False, select=False)
+        panel._ctrl.switch_tab.assert_called_with("lazytid")
+        panel._restore_messages_if_needed.assert_called_once_with("lazytid")
+
+    def test_select_unknown_chat_is_noop(self):
+        panel = _make_panel()
+        panel._ctrl.get_session.return_value = None
+        panel._create_tab = MagicMock()
+
+        panel._select_chat("ghost")
+
+        panel._create_tab.assert_not_called()
 
 
 if __name__ == "__main__":

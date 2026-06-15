@@ -9,19 +9,19 @@ set "SCRIPT_DIR=%~dp0"
 :: Remove trailing backslash
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
-:: ── Sanity checks ────────────────────────────────────────────────────
+:: -- Sanity checks ----------------------------------------------------
 
 if not exist "%SCRIPT_DIR%\rikugan_plugin.py" (
-    echo [-] rikugan_plugin.py not found in %SCRIPT_DIR% — run this from the repo root
+    echo [-] rikugan_plugin.py not found in %SCRIPT_DIR% - run this from the repo root
     exit /b 1
 )
 
 if not exist "%SCRIPT_DIR%\rikugan\" (
-    echo [-] rikugan\ package not found in %SCRIPT_DIR% — run this from the repo root
+    echo [-] rikugan\ package not found in %SCRIPT_DIR% - run this from the repo root
     exit /b 1
 )
 
-:: ── Locate IDA user directory ────────────────────────────────────────
+:: -- Locate IDA user directory ---------------------------------------
 
 set "IDA_USER_DIR="
 
@@ -55,7 +55,7 @@ if not defined IDA_USER_DIR (
 set "PLUGINS_DIR=%IDA_USER_DIR%\plugins"
 set "CONFIG_DIR=%IDA_USER_DIR%\rikugan"
 
-:: ── Remove old "iris" installation (rebrand cleanup) ───────────────
+:: -- Remove old "iris" installation (rebrand cleanup) ---------------
 if exist "%PLUGINS_DIR%\iris_plugin.py" (
     echo [!] Removing old iris_plugin.py
     del "%PLUGINS_DIR%\iris_plugin.py"
@@ -74,18 +74,23 @@ if exist "%OLD_IRIS%\" (
     echo [+] Old 'iris' installation removed
 )
 
-:: ── Find IDA installation directory ──────────────────────────────────
+:: -- Find IDA installation directory ---------------------------------
 
 set "IDA_INSTALL_DIR="
-for /f "tokens=2*" %%A in ('reg query "HKCU\Software\Hex-Rays\IDA" /v "Location" 2^>nul') do set "IDA_INSTALL_DIR=%%B"
+if defined IDADIR if exist "%IDADIR%\" set "IDA_INSTALL_DIR=%IDADIR%"
+if not defined IDA_INSTALL_DIR (
+    for /f "tokens=2*" %%A in ('reg query "HKCU\Software\Hex-Rays\IDA" /v "Location" 2^>nul') do set "IDA_INSTALL_DIR=%%B"
+)
 if not defined IDA_INSTALL_DIR (
     for /f "tokens=2*" %%A in ('reg query "HKLM\SOFTWARE\Hex-Rays\IDA" /v "Location" 2^>nul') do set "IDA_INSTALL_DIR=%%B"
 )
+if not defined IDA_INSTALL_DIR (
+    for /f "tokens=2*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Hex-Rays\IDA" /v "Location" 2^>nul') do set "IDA_INSTALL_DIR=%%B"
+)
 
-:: ── Find IDA's Python ─────────────────────────────────────────────────
+:: -- Find IDA's Python -----------------------------------------------
 
-set "IDA_PYTHON="
-if defined IDA_INSTALL_DIR (
+if not defined IDA_PYTHON if defined IDA_INSTALL_DIR (
     echo [*] IDA install dir: !IDA_INSTALL_DIR!
     :: Bundled Python: <IDA>\python3.XX\python.exe  (IDA 7.5+)
     for /d %%D in ("!IDA_INSTALL_DIR!\python3*") do (
@@ -104,13 +109,15 @@ if defined IDA_INSTALL_DIR (
                 :: Output is typically a bare path or "Path: C:\..."
                 set "_line=%%L"
                 set "_line=!_line:Path: =!"
-                if exist "!_line!" set "IDA_PYTHON=!_line!"
+                set "_line=!_line:'=!"
+                call :resolve_python_target "!_line!"
+                if defined RESOLVED_PYTHON set "IDA_PYTHON=!RESOLVED_PYTHON!"
             )
         )
     )
 )
 
-:: ── Install dependencies ─────────────────────────────────────────────
+:: -- Install dependencies --------------------------------------------
 
 echo [*] Installing Python dependencies...
 
@@ -138,17 +145,17 @@ set "PIP_CMD=pip"
 call :try_install_requirements
 if !errorlevel! equ 0 goto deps_ok
 
-echo [-] Failed to install Python dependencies from requirements.txt
-exit /b 1
+echo [!] Could not install one or more Python dependencies.
+echo [!] Rikugan will still be installed, but features tied to missing packages will show warnings in the plugin.
 
 :deps_ok
 
-:: ── Create directories ───────────────────────────────────────────────
+:: -- Create directories ----------------------------------------------
 
 if not exist "%PLUGINS_DIR%\" mkdir "%PLUGINS_DIR%"
 if not exist "%CONFIG_DIR%\"  mkdir "%CONFIG_DIR%"
 
-:: ── Copy built-in skills ────────────────────────────────────────────
+:: -- Copy built-in skills --------------------------------------------
 
 set "SKILLS_DIR=%CONFIG_DIR%\skills"
 set "BUILTINS_SRC=%SCRIPT_DIR%\rikugan\skills\builtins"
@@ -169,7 +176,7 @@ if exist "%BUILTINS_SRC%\" (
     echo [!] Built-in skills not found at %BUILTINS_SRC%, skipping
 )
 
-:: ── Install plugin (copy) ────────────────────────────────────────────
+:: -- Install plugin (copy) -------------------------------------------
 
 echo [*] Installing Rikugan into %PLUGINS_DIR%...
 
@@ -185,14 +192,14 @@ if !errorlevel! equ 0 (
     exit /b 1
 )
 
-:: rikugan/ package — use directory junction (symlink-like, no admin required)
+:: rikugan/ package - use directory junction (symlink-like, no admin required)
 if exist "%PLUGINS_DIR%\rikugan\" (
     :: Check if it's a junction
     fsutil reparsepoint query "%PLUGINS_DIR%\rikugan" >nul 2>&1
     if !errorlevel! equ 0 (
         rmdir "%PLUGINS_DIR%\rikugan"
     ) else (
-        :: Real directory — back it up
+        :: Real directory - back it up
         echo [!] Backing up existing rikugan\ to rikugan.bak\
         if exist "%PLUGINS_DIR%\rikugan.bak\" rmdir /s /q "%PLUGINS_DIR%\rikugan.bak"
         ren "%PLUGINS_DIR%\rikugan" "rikugan.bak"
@@ -214,7 +221,7 @@ if !errorlevel! equ 0 (
     )
 )
 
-:: ── Done ─────────────────────────────────────────────────────────────
+:: -- Done ------------------------------------------------------------
 
 echo.
 echo [+] Rikugan installed successfully!
@@ -229,6 +236,56 @@ echo [*] For Binary Ninja installation, run install_binaryninja.bat
 
 endlocal
 exit /b 0
+
+:resolve_python_target
+set "RESOLVED_PYTHON="
+set "TARGET=%~1"
+if not defined TARGET exit /b 1
+
+for %%I in ("%TARGET%") do (
+    set "TARGET_PATH=%%~fI"
+    set "TARGET_DIR=%%~dpI"
+    set "TARGET_NAME=%%~nxI"
+    set "TARGET_BASE=%%~nI"
+)
+
+if exist "!TARGET_PATH!" (
+    if /i "!TARGET_NAME:~-4!"==".exe" (
+        set "RESOLVED_PYTHON=!TARGET_PATH!"
+        exit /b 0
+    )
+)
+
+if exist "!TARGET_PATH!\" (
+    if exist "!TARGET_PATH!\python.exe" (
+        set "RESOLVED_PYTHON=!TARGET_PATH!\python.exe"
+        exit /b 0
+    )
+    if exist "!TARGET_PATH!\python3.exe" (
+        set "RESOLVED_PYTHON=!TARGET_PATH!\python3.exe"
+        exit /b 0
+    )
+)
+
+if /i "!TARGET_NAME:~-4!"==".dll" (
+    if exist "!TARGET_DIR!python.exe" (
+        set "RESOLVED_PYTHON=!TARGET_DIR!python.exe"
+        exit /b 0
+    )
+    if exist "!TARGET_DIR!python3.exe" (
+        set "RESOLVED_PYTHON=!TARGET_DIR!python3.exe"
+        exit /b 0
+    )
+    set "DLL_VER=!TARGET_BASE:python=!"
+    if not "!DLL_VER!"=="!TARGET_BASE!" (
+        if exist "!TARGET_DIR!python!DLL_VER!.exe" (
+            set "RESOLVED_PYTHON=!TARGET_DIR!python!DLL_VER!.exe"
+            exit /b 0
+        )
+    )
+)
+
+exit /b 1
 
 :try_install_requirements
 %PIP_CMD% --version >nul 2>&1

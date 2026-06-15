@@ -70,8 +70,8 @@ class SessionControllerBase:
         tab_id = self._create_session()
         self._active_tab_id = tab_id
 
-        self._runner: BackgroundAgentRunner | None = None
-        self._pending_messages: list[str] = []
+        self._runners: dict[str, BackgroundAgentRunner] = {}
+        self._pending_messages: dict[str, list[str]] = {}
 
     def _initialize_runtime(self) -> None:
         """Load heavy runtime components off the UI path."""
@@ -91,12 +91,12 @@ class SessionControllerBase:
                 return
             self._mcp_manager.load_config()
 
-            # Load enabled external MCP servers
-            from ..core.external_sources import discover_all_external_mcp
-
-            external_mcp = discover_all_external_mcp()
             enabled_set = set(self.config.enabled_external_mcp)
             if enabled_set:
+                # Load enabled external MCP servers only when explicitly configured.
+                from ..core.external_sources import discover_all_external_mcp
+
+                external_mcp = discover_all_external_mcp()
                 for source_key, servers in external_mcp.items():
                     enabled = [s for s in servers if f"{source_key}:{s.name}" in enabled_set]
                     if enabled:
@@ -176,6 +176,9 @@ class SessionControllerBase:
         session = self._sessions.get(tab_id)
         if session is None:
             return
+        self.cancel(tab_id)
+        self._runners.pop(tab_id, None)
+        self._pending_messages.pop(tab_id, None)
         if self.config.checkpoint_auto_save and session.messages:
             try:
                 history = SessionHistory(self.config)
@@ -186,13 +189,11 @@ class SessionControllerBase:
         log_debug(f"Closed tab {tab_id}")
 
     def switch_tab(self, tab_id: str) -> None:
-        """Switch active tab. Cancels running agent if switching away."""
+        """Switch active tab without interrupting other running chats."""
         if tab_id == self._active_tab_id:
             return
         if tab_id not in self._sessions:
             return
-        if self.is_agent_running:
-            self.cancel()
         self._active_tab_id = tab_id
         log_debug(f"Switched to tab {tab_id}")
 
@@ -242,13 +243,73 @@ class SessionControllerBase:
 
     @property
     def is_agent_running(self) -> bool:
-        return self._runner is not None and self._runner.agent_loop.is_running
+        return self.is_tab_running(self._active_tab_id)
+
+    @property
+    def any_agent_running(self) -> bool:
+        return any(runner.agent_loop.is_running for runner in self._runners.values())
+
+    def is_tab_running(self, tab_id: str) -> bool:
+        runner = self._runners.get(tab_id)
+        return runner is not None and runner.agent_loop.is_running
+
+    def tab_pending_count(self, tab_id: str) -> int:
+        return len(self._pending_messages.get(tab_id, []))
 
     def get_runner(self) -> BackgroundAgentRunner | None:
-        return self._runner
+        return self._runners.get(self._active_tab_id)
 
-    def start_agent(self, user_message: str) -> str | None:
+    def get_runner_for_tab(self, tab_id: str) -> BackgroundAgentRunner | None:
+        return self._runners.get(tab_id)
+
+    def running_tab_ids(self) -> list[str]:
+        """Return tab ids that still have an active background runner."""
+        return [tab_id for tab_id, runner in self._runners.items() if runner.agent_loop.is_running]
+
+    def get_provider(self) -> Any:
+        """Create and return an LLMProvider instance for the current config."""
+        if not self._runtime_init_done.is_set():
+            self._runtime_init_done.wait(timeout=10.0)
+        try:
+            provider = self._provider_registry.get_or_create(
+                self.config.provider.name,
+                api_key=self.config.provider.api_key,
+                api_base=self.config.provider.api_base,
+                model=self.config.provider.model,
+                **(self.config.provider.extra or {}),
+            )
+            provider.ensure_ready()
+            return provider
+        except Exception as e:
+            log_error(f"Provider creation failed: {e}")
+            return None
+
+    def get_context_window(self) -> int:
+        """Return the active provider/model context window without UI-owned overrides."""
+        try:
+            provider = self._provider_registry.get_or_create(
+                self.config.provider.name,
+                api_key=self.config.provider.api_key,
+                api_base=self.config.provider.api_base,
+                model=self.config.provider.model,
+                **(self.config.provider.extra or {}),
+            )
+            return provider.context_window()
+        except Exception as e:
+            log_debug(f"Context window lookup failed: {e}")
+            return self.config.provider.context_window or 128000
+
+    def get_tool_registry(self) -> ToolRegistry:
+        """Return the tool registry."""
+        return self._tool_registry
+
+    def start_agent(self, user_message: str, tab_id: str | None = None) -> str | None:
         """Create provider + agent loop and start the background runner."""
+        tab_id = tab_id or self._active_tab_id
+        if self.is_tab_running(tab_id):
+            self.queue_message(user_message, tab_id=tab_id)
+            return None
+
         if not self._runtime_init_done.is_set():
             # Delay only the first agent start if background init is still running.
             self._runtime_init_done.wait(timeout=10.0)
@@ -259,50 +320,71 @@ class SessionControllerBase:
                 api_key=self.config.provider.api_key,
                 api_base=self.config.provider.api_base,
                 model=self.config.provider.model,
+                **(self.config.provider.extra or {}),
             )
             provider.ensure_ready()
         except Exception as e:
             log_error(f"Provider creation failed: {e}")
             return f"Provider error: {e}"
 
+        session = self._sessions[tab_id]
         loop = AgentLoop(
             provider,
             self._tool_registry,
             self.config,
-            self._sessions[self._active_tab_id],
+            session,
             skill_registry=self._skill_registry,
             host_name=self.host_name,
         )
-        self._runner = BackgroundAgentRunner(loop)
-        self._runner.start(user_message)
+        runner = BackgroundAgentRunner(loop)
+        self._runners[tab_id] = runner
+        runner.start(user_message)
         return None
 
-    def get_event(self, timeout: float = 0) -> TurnEvent | None:
-        if self._runner is None:
+    def get_event(self, timeout: float = 0, tab_id: str | None = None) -> TurnEvent | None:
+        runner = self._runners.get(tab_id or self._active_tab_id)
+        if runner is None:
             return None
-        return self._runner.get_event(timeout=timeout)
+        return runner.get_event(timeout=timeout)
 
-    def cancel(self) -> None:
-        self._pending_messages.clear()
-        if self._runner:
-            self._runner.cancel()
+    def poll_events(self, max_per_tab: int = 30) -> list[tuple[str, TurnEvent]]:
+        """Drain pending events from all running chats."""
+        events: list[tuple[str, TurnEvent]] = []
+        for tab_id, runner in list(self._runners.items()):
+            for _ in range(max_per_tab):
+                event = runner.get_event(timeout=0)
+                if event is None:
+                    break
+                events.append((tab_id, event))
+        return events
 
-    def queue_message(self, text: str) -> None:
-        self._pending_messages.append(text)
-        log_debug(f"Message queued, {len(self._pending_messages)} pending")
+    def cancel(self, tab_id: str | None = None) -> None:
+        target = tab_id or self._active_tab_id
+        self._pending_messages.pop(target, None)
+        runner = self._runners.get(target)
+        if runner:
+            runner.cancel()
 
-    def on_agent_finished(self) -> None:
-        self._runner = None
-        # Discard queued messages — context may have changed (error, cancel,
-        # model switch).  The user can re-send if still relevant.
-        self._pending_messages.clear()
+    def queue_message(self, text: str, tab_id: str | None = None) -> None:
+        target = tab_id or self._active_tab_id
+        queue_for_tab = self._pending_messages.setdefault(target, [])
+        queue_for_tab.append(text)
+        log_debug(f"Message queued for {target}, {len(queue_for_tab)} pending")
+
+    def on_agent_finished(self, tab_id: str | None = None) -> str | None:
+        target = tab_id or self._active_tab_id
+        self._runners.pop(target, None)
+        pending = self._pending_messages.get(target, [])
+        next_message = pending.pop(0) if pending else None
+        if not pending:
+            self._pending_messages.pop(target, None)
 
         # Re-persist the instance ID in the database.  For BN the BNDB may
         # not have existed at init time; writing again ensures the ID is
         # present when the BNDB is eventually saved.
         set_database_instance_id(self._db_instance_id)
 
-        session = self._sessions.get(self._active_tab_id)
+        session = self._sessions.get(target)
         if session and self.config.checkpoint_auto_save and session.messages:
             try:
                 history = SessionHistory(self.config)
@@ -310,10 +392,12 @@ class SessionControllerBase:
                 log_debug(f"Session auto-saved: {path}")
             except (OSError, ValueError) as e:
                 log_error(f"Failed to auto-save session: {e}")
+        return next_message
 
     def new_chat(self) -> None:
         """Reset the active tab to a fresh session."""
-        self._pending_messages.clear()
+        self.cancel(self._active_tab_id)
+        self._pending_messages.pop(self._active_tab_id, None)
         session = self._sessions.get(self._active_tab_id)
         if session and self.config.checkpoint_auto_save and session.messages:
             try:
@@ -329,12 +413,40 @@ class SessionControllerBase:
         )
         log_info("Started new chat session (active tab)")
 
-    def restore_sessions(self) -> list[tuple[str, SessionState]]:
-        """Load ALL saved sessions for the current idb_path and return (tab_id, session) pairs."""
-        results: list[tuple[str, SessionState]] = []
+    def delete_tab(self, tab_id: str) -> None:
+        """Delete a chat session from memory and disk without saving it first."""
+        session = self._sessions.get(tab_id)
+        self.cancel(tab_id)
+        self._runners.pop(tab_id, None)
+        self._pending_messages.pop(tab_id, None)
+        if session is not None:
+            try:
+                SessionHistory(self.config).delete_session(session.id)
+            except OSError as e:
+                log_error(f"Failed to delete session {session.id}: {e}")
+            del self._sessions[tab_id]
+        if not self._sessions:
+            self._active_tab_id = self._create_session()
+        elif self._active_tab_id == tab_id:
+            self._active_tab_id = next(iter(self._sessions))
+
+    def load_restorable_sessions(self) -> list[SessionState]:
+        """Read and parse all saved sessions for the current database from disk.
+
+        Pure data path — performs only disk I/O and JSON/Message parsing and
+        does NOT touch ``self._sessions`` or create any Qt objects, so it is
+        safe to run on a background thread.  The expensive part of restore
+        (parsing every message of every chat) lives here; tab registration and
+        widget creation happen later on the UI thread via
+        ``register_restored_sessions``.  Sessions are returned oldest-first.
+        """
+        loaded: list[SessionState] = []
+        if not self.config.restore_sessions_on_start:
+            log_debug("Skipping session restore: disabled in config")
+            return loaded
         if not self._idb_path:
             log_debug("Skipping session restore: no database path available")
-            return results
+            return loaded
         try:
             history = SessionHistory(self.config)
             summaries = history.list_sessions(
@@ -345,24 +457,52 @@ class SessionControllerBase:
             for summary in summaries:
                 session = history.load_session(summary["id"])
                 if session and session.messages:
-                    tab_id = uuid.uuid4().hex[:8]
-                    self._sessions[tab_id] = session
-                    results.append((tab_id, session))
-                    log_debug(f"Restored session {session.id} as tab {tab_id}")
+                    loaded.append(session)
         except (OSError, ValueError, KeyError) as e:
-            log_error(f"Failed to restore sessions: {e}")
+            log_error(f"Failed to load sessions for restore: {e}")
+        return loaded
+
+    def register_restored_sessions(self, sessions: list[SessionState]) -> list[tuple[str, SessionState]]:
+        """Register pre-loaded sessions as tabs. Must run on the UI thread.
+
+        Assigns tab ids, inserts them into the live session map, drops the
+        default empty tab, and activates the most recent restored session.
+        """
+        results: list[tuple[str, SessionState]] = []
+        for session in sessions:
+            if not session.messages:
+                continue
+            tab_id = uuid.uuid4().hex[:8]
+            self._sessions[tab_id] = session
+            results.append((tab_id, session))
+            log_debug(f"Restored session {session.id} as tab {tab_id}")
         if results:
-            # Remove the default empty session that was created in __init__
-            # and set the first restored tab as active
+            # Drop the default empty session created in __init__ and activate
+            # the most recent restored tab. If the user already started working
+            # in the default tab during the (async) load, keep them there.
+            default_dropped = False
             if self._active_tab_id in self._sessions:
                 default_session = self._sessions[self._active_tab_id]
                 if not default_session.messages:
                     del self._sessions[self._active_tab_id]
-            self._active_tab_id = results[-1][0]  # most recent
+                    default_dropped = True
+            if default_dropped:
+                self._active_tab_id = results[-1][0]  # most recent
         return results
+
+    def restore_sessions(self) -> list[tuple[str, SessionState]]:
+        """Load ALL saved sessions and register them as tabs (synchronous).
+
+        Retained for callers/tests that want the blocking path; the panel uses
+        the split ``load_restorable_sessions`` + ``register_restored_sessions``
+        so the disk/parse cost stays off the UI thread.
+        """
+        return self.register_restored_sessions(self.load_restorable_sessions())
 
     def restore_session(self) -> SessionState | None:
         """Legacy: restore only the latest session into the active tab."""
+        if not self.config.restore_sessions_on_start:
+            return None
         if not self._idb_path:
             log_debug("Skipping session restore: no database path available")
             return None
@@ -383,7 +523,8 @@ class SessionControllerBase:
 
     def reset_for_new_file(self, new_idb_path: str) -> None:
         """Save all sessions and reset for a new database file."""
-        self.cancel()
+        for tab_id in list(self._runners):
+            self.cancel(tab_id)
         for tab_id, session in self._sessions.items():
             if session.messages:
                 try:
@@ -422,9 +563,9 @@ class SessionControllerBase:
         self._runtime_shutdown.set()
         if self._runtime_init_thread.is_alive():
             self._runtime_init_done.wait(timeout=1.0)
-        if self._runner:
-            self._runner.cancel()
-            self._runner = None
+        for tab_id in list(self._runners):
+            self.cancel(tab_id)
+        self._runners.clear()
         # Final attempt to persist instance ID before the host saves the DB.
         set_database_instance_id(self._db_instance_id)
         for tab_id, session in self._sessions.items():

@@ -28,6 +28,7 @@ from ..exploration_mode import (
 from ..plan_mode import parse_plan as _parse_plan_impl
 from ..subagent import SubagentRunner
 from ..turn import TurnEvent
+from .phase_tracker import ModePhaseTracker
 from .turn_helpers import execute_single_turn
 
 if TYPE_CHECKING:
@@ -96,7 +97,7 @@ def _run_phase1_subagent(
         loop._clear_exploration_state()
 
 
-def _run_phase1_inline(
+def run_phase1_inline(
     loop: AgentLoop,
     state: ExplorationState,
     exploration_system: str,
@@ -242,9 +243,9 @@ def _run_phase2_plan(
 
     state.transition_to(ExplorationPhase.EXECUTE)
     yield TurnEvent.exploration_phase_change("plan", "execute", "Plan approved. Executing patches.")
-    from .plan import _persist_plan
+    from .plan import persist_plan
 
-    _persist_plan(loop, user_goal, steps)
+    persist_plan(loop, user_goal, steps)
     return steps
 
 
@@ -378,46 +379,78 @@ def run_exploration_mode(
     tools_schema: list,
     explore_only: bool = False,
 ) -> Generator[TurnEvent, None, None]:
-    """Run the agent in exploration mode: explore -> plan -> patch -> save."""
+    """Run the agent in exploration mode: explore -> plan -> patch -> save.
+
+    Uses :class:`ModePhaseTracker` so that on cancel + resume the pipeline
+    skips to the phase that was interrupted.  The conversation history has
+    all prior tool calls/results — the LLM picks up where it left off.
+    """
+    phases = ["explore"] if explore_only else ["explore", "plan", "execute", "save"]
+    tracker = ModePhaseTracker(loop, phases=phases)
+
     state = ExplorationState(explore_only=explore_only)
     state.max_explore_turns = loop.config.exploration_turn_limit
     state.knowledge_base.user_goal = user_message
     loop._exploration_state = state
 
     exploration_system = system_prompt + EXPLORATION_SYSTEM_ADDENDUM
-    log_info(f"Exploration mode started: goal={user_message[:80]!r}, explore_only={explore_only}")
-    yield TurnEvent.exploration_phase_change("", "explore", f"Starting exploration: {user_message[:60]}")
+    log_info(
+        f"Exploration mode started: goal={user_message[:80]!r}, explore_only={explore_only}, resuming={tracker.is_resuming}"
+    )
 
-    # Phase 1: EXPLORE — subagent for /modify, inline for /explore
-    if not explore_only:
-        yield from _run_phase1_subagent(loop, state, user_message, exploration_system)
-    else:
-        yield from _run_phase1_inline(loop, state, exploration_system, tools_schema, explore_only)
+    # ------------------------------------------------------------------
+    # Phase 1: EXPLORE
+    # ------------------------------------------------------------------
+    if tracker.should_run("explore"):
+        tracker.enter("explore")
+        if not tracker.is_continuing("explore"):
+            yield TurnEvent.exploration_phase_change("", "explore", f"Starting exploration: {user_message[:60]}")
 
-    if explore_only:
-        summary = state.knowledge_base.to_summary()
-        if summary:
-            loop.session.add_message(
-                Message(
-                    role=Role.USER,
-                    content=("[SYSTEM] Exploration complete. Here is a summary of findings:\n\n" + summary),
+        if not explore_only:
+            yield from _run_phase1_subagent(loop, state, user_message, exploration_system)
+        else:
+            yield from run_phase1_inline(loop, state, exploration_system, tools_schema, explore_only)
+
+        if explore_only:
+            summary = state.knowledge_base.to_summary()
+            if summary:
+                loop.session.add_message(
+                    Message(
+                        role=Role.USER,
+                        content=("[SYSTEM] Exploration complete. Here is a summary of findings:\n\n" + summary),
+                    )
                 )
-            )
-        log_info("Exploration mode finished (explore-only)")
-        loop._clear_exploration_state()
-        return
+            log_info("Exploration mode finished (explore-only)")
+            loop._clear_exploration_state()
+            tracker.complete()
+            return
+    else:
+        # Resuming past explore — advance the state machine so downstream
+        # phase checks pass.  The conversation history has the prior findings.
+        # For execute/save we fall back to plan since plan steps are lost.
+        if tracker.resume_phase in ("execute", "save"):
+            state.phase = ExplorationPhase.PLAN
+        else:
+            state.phase = ExplorationPhase.PLAN
 
+    # ------------------------------------------------------------------
     # Phase 2: PLAN
+    # ------------------------------------------------------------------
     if state.phase == ExplorationPhase.PLAN:
+        tracker.enter("plan")
         steps = yield from _run_phase2_plan(loop, state, exploration_system, user_message)
         if steps is None:
             loop._clear_exploration_state()
+            tracker.complete()
             return
     else:
         steps = []
 
+    # ------------------------------------------------------------------
     # Phase 3: EXECUTE
+    # ------------------------------------------------------------------
     if state.phase == ExplorationPhase.EXECUTE:
+        tracker.enter("execute")
         ok = yield from _run_phase3_execute(
             loop,
             state,
@@ -427,9 +460,12 @@ def run_exploration_mode(
         )
         if not ok:
             loop._clear_exploration_state()
+            tracker.complete()
             return
         # Phase 4: SAVE
+        tracker.enter("save")
         yield from _run_phase4_save(loop, state)
 
     log_info("Exploration mode finished")
+    tracker.complete()
     loop._clear_exploration_state()

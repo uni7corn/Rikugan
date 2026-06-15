@@ -3,8 +3,47 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from rikugan.ui.markdown import _inline, _inline_formatting, md_to_html
+from rikugan.ui.markdown import (
+    _has_markdown_syntax,
+    _inline,
+    _inline_formatting,
+    _theme_markdown_styles,
+    md_to_html,
+)
+
+_LIGHT_TOKENS = {
+    "panel": "#f2f2f2",
+    "chat_canvas": "#eeeeee",
+    "assistant_bg": "#e9e9e9",
+    "tool_bg": "#ebebeb",
+    "thinking_bg": "#e6e6e6",
+    "input_bg": "#e4e4e4",
+    "text": "#202020",
+    "muted": "#8a8a8a",
+    "subtle": "#626262",
+    "border": "#b0b0b0",
+    "accent": "#1476a8",
+    "accent_text": "#ffffff",
+    "code_bg": "#e2e2e2",
+}
+
+_DARK_TOKENS = {
+    "panel": "#242424",
+    "chat_canvas": "#2d2d2d",
+    "assistant_bg": "#353535",
+    "tool_bg": "#333333",
+    "thinking_bg": "#393939",
+    "input_bg": "#3c3c3c",
+    "text": "#e6e6e6",
+    "muted": "#888888",
+    "subtle": "#aaaaaa",
+    "border": "#555555",
+    "accent": "#1678aa",
+    "accent_text": "#ffffff",
+    "code_bg": "#3a3a3a",
+}
 
 
 class TestMdToHtmlEmptyAndNone(unittest.TestCase):
@@ -14,6 +53,20 @@ class TestMdToHtmlEmptyAndNone(unittest.TestCase):
     def test_plain_text_passthrough(self):
         result = md_to_html("hello world")
         self.assertIn("hello world", result)
+
+
+class TestHasMarkdownSyntax(unittest.TestCase):
+    def test_plain_text_returns_false(self):
+        self.assertFalse(_has_markdown_syntax("hello world"))
+
+    def test_newline_only_returns_false(self):
+        self.assertFalse(_has_markdown_syntax("hello\nworld"))
+
+    def test_bold_marker_returns_true(self):
+        self.assertTrue(_has_markdown_syntax("**bold**"))
+
+    def test_header_marker_returns_true(self):
+        self.assertTrue(_has_markdown_syntax("# Title"))
 
 
 class TestMdToHtmlHeaders(unittest.TestCase):
@@ -131,7 +184,7 @@ class TestInlineFormatting(unittest.TestCase):
 
     def test_link(self):
         result = _inline_formatting("[text](http://example.com)")
-        self.assertIn('<a', result)
+        self.assertIn("<a", result)
         self.assertIn("href", result)
         self.assertIn("text", result)
         self.assertIn("http://example.com", result)
@@ -159,6 +212,21 @@ class TestInlineCodeSpans(unittest.TestCase):
         self.assertIn("&lt;b&gt;", result)
 
 
+class TestMarkdownThemeStyles(unittest.TestCase):
+    def test_light_theme_code_styles_use_dark_text_on_light_surface(self):
+        with patch("rikugan.ui.markdown.get_chat_color_tokens", return_value=_LIGHT_TOKENS):
+            styles = _theme_markdown_styles()
+        self.assertIn("background-color:#e2e2e2", styles["block_code_style"])
+        self.assertIn("color:#202020", styles["block_code_style"])
+        self.assertIn("color:#1476a8", styles["link_style"])
+
+    def test_dark_theme_code_styles_use_light_text_on_dark_surface(self):
+        with patch("rikugan.ui.markdown.get_chat_color_tokens", return_value=_DARK_TOKENS):
+            styles = _theme_markdown_styles()
+        self.assertIn("background-color:#3a3a3a", styles["block_code_style"])
+        self.assertIn("color:#e6e6e6", styles["block_code_style"])
+
+
 class TestMdToHtmlIntegration(unittest.TestCase):
     def test_mixed_content(self):
         md = "# Title\n\nSome **bold** and `code`.\n\n- item\n- item2"
@@ -175,6 +243,114 @@ class TestMdToHtmlIntegration(unittest.TestCase):
         result = md_to_html("- [link](http://x.com)")
         self.assertIn("href", result)
         self.assertIn("<li>", result)
+
+
+class TestMdToHtmlHeadersExtended(unittest.TestCase):
+    def test_h5(self):
+        self.assertIn("12px", md_to_html("##### Five"))
+
+    def test_h6(self):
+        self.assertIn("11px", md_to_html("###### Six"))
+
+
+class TestMdToHtmlStrikethrough(unittest.TestCase):
+    def test_strikethrough(self):
+        self.assertEqual(_inline_formatting("~~gone~~"), "<s>gone</s>")
+
+    def test_strikethrough_in_text(self):
+        result = md_to_html("keep ~~drop~~ keep")
+        self.assertIn("<s>drop</s>", result)
+
+
+class TestMdToHtmlBoldItalic(unittest.TestCase):
+    def test_triple_star_is_bold_italic(self):
+        self.assertEqual(_inline_formatting("***wow***"), "<b><i>wow</i></b>")
+
+
+class TestMdToHtmlTables(unittest.TestCase):
+    def test_basic_table(self):
+        result = md_to_html("| A | B |\n| - | - |\n| 1 | 2 |")
+        self.assertIn("<table", result)
+        self.assertIn("<th", result)
+        self.assertIn("<td", result)
+        for token in ("A", "B", "1", "2"):
+            self.assertIn(token, result)
+
+    def test_table_alignment(self):
+        result = md_to_html("| L | R |\n|:--|--:|\n| a | b |")
+        self.assertIn('align="right"', result)
+
+    def test_table_inline_formatting_in_cells(self):
+        result = md_to_html("| H |\n| - |\n| **b** |")
+        self.assertIn("<b>b</b>", result)
+
+    def test_ragged_row_padded(self):
+        # A short data row should not raise and still produces cells.
+        result = md_to_html("| A | B |\n| - | - |\n| only |")
+        self.assertIn("<table", result)
+        self.assertIn("only", result)
+
+    def test_pipe_text_without_separator_is_not_a_table(self):
+        result = md_to_html("a | b | c")
+        self.assertNotIn("<table", result)
+
+
+class TestMdToHtmlBlockquote(unittest.TestCase):
+    def test_blockquote(self):
+        result = md_to_html("> quoted text")
+        self.assertIn("<blockquote", result)
+        self.assertIn("quoted text", result)
+
+    def test_blockquote_inline(self):
+        result = md_to_html("> see **this**")
+        self.assertIn("<b>this</b>", result)
+
+    def test_nested_blockquote(self):
+        result = md_to_html("> outer\n> > inner")
+        self.assertEqual(result.count("<blockquote"), 2)
+        self.assertIn("inner", result)
+
+
+class TestMdToHtmlNestedLists(unittest.TestCase):
+    def test_nested_bullets(self):
+        result = md_to_html("- a\n  - b\n- c")
+        self.assertEqual(result.count("<ul"), 2)
+        for token in ("a", "b", "c"):
+            self.assertIn(token, result)
+
+    def test_plus_bullet(self):
+        result = md_to_html("+ one\n+ two")
+        self.assertIn("<ul", result)
+        self.assertIn("one", result)
+
+    def test_nested_ordered(self):
+        result = md_to_html("1. a\n    1. b")
+        self.assertIn("<ol", result)
+        self.assertIn("b", result)
+
+
+class TestMdToHtmlTaskLists(unittest.TestCase):
+    def test_unchecked_and_checked(self):
+        result = md_to_html("- [ ] todo\n- [x] done")
+        self.assertIn("☐ todo", result)  # ☐
+        self.assertIn("☑ done", result)  # ☑
+
+    def test_task_list_has_no_bullet(self):
+        result = md_to_html("- [ ] todo")
+        self.assertNotIn("<li>", result)
+
+
+class TestMdToHtmlAutolink(unittest.TestCase):
+    def test_bare_url_becomes_link(self):
+        result = md_to_html("see https://example.com/x now")
+        self.assertIn('href="https://example.com/x"', result)
+
+    def test_explicit_link_not_double_wrapped(self):
+        result = _inline("[name](https://example.com)")
+        self.assertEqual(result.count("<a "), 1)
+
+    def test_no_url_unchanged(self):
+        self.assertEqual(_inline_formatting("just words"), "just words")
 
 
 if __name__ == "__main__":

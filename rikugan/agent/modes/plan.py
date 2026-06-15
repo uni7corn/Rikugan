@@ -7,13 +7,13 @@ import time
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
-from ...core.errors import CancellationError, ProviderError
+from ...core.errors import ProviderError
 from ...core.logging import log_error, log_info
 from ...core.sanitize import sanitize_skill_body
 from ...core.types import Message, Role, UserDecision, parse_approval
 from ..plan_mode import parse_plan as _parse_plan_impl
 from ..turn import TurnEvent
-from .turn_helpers import execute_single_turn
+from .turn_helpers import execute_single_turn, finish_reason_notice
 
 if TYPE_CHECKING:
     from ..loop import AgentLoop
@@ -58,16 +58,16 @@ def _generate_plan_text(
     """Stream a text-only LLM turn for plan generation. Returns plan text or None."""
     yield TurnEvent.turn_start(1)
     try:
-        plan_text, _, usage, _ = yield from loop._stream_llm_turn(system_prompt, None)
-    except CancellationError:
-        yield TurnEvent.cancelled_event()
-        return None
+        plan_text, _, usage, _, finish_reason = yield from loop._stream_llm_turn(system_prompt, None)
     except ProviderError as e:
         yield TurnEvent.error_event(loop._format_provider_error_for_user(e))
         return None
 
     if plan_text:
         yield TurnEvent.text_done(plan_text)
+    notice = finish_reason_notice(finish_reason)
+    if notice:
+        yield TurnEvent.error_event(notice)
     loop.session.add_message(Message(role=Role.ASSISTANT, content=plan_text, token_usage=usage))
     yield TurnEvent.turn_end(1)
     return plan_text
@@ -109,9 +109,9 @@ def _execute_step(
     yield TurnEvent.plan_step_done(step_index, "completed")
 
 
-def _persist_plan(loop: AgentLoop, user_goal: str, steps: list[str]) -> None:
+def persist_plan(loop: AgentLoop, user_goal: str, steps: list[str]) -> None:
     """Save an approved plan to RIKUGAN.md for cross-session reference."""
-    from ..loop import _append_to_memory_file
+    from ..loop import append_to_memory_file
 
     idb_dir = ""
     if loop.session.idb_path:
@@ -125,7 +125,7 @@ def _persist_plan(loop: AgentLoop, user_goal: str, steps: list[str]) -> None:
         lines = [f"\n## Plan ({timestamp})\n", f"Goal: {user_goal[:200]}\n"]
         lines += [f"{i}. {step}\n" for i, step in enumerate(steps, 1)]
         lines.append("\n")
-        _append_to_memory_file(md_path, "".join(lines))
+        append_to_memory_file(md_path, "".join(lines))
         log_info(f"Plan persisted to RIKUGAN.md ({len(steps)} steps)")
     except OSError as e:
         log_error(f"Failed to persist plan to RIKUGAN.md: {e}")

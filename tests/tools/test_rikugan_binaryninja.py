@@ -207,7 +207,7 @@ class TestGetSidebarPanel(unittest.TestCase):
         mock_sidebar = MagicMock()
         mock_sidebar.widget.return_value = mock_widget
         with patch.object(bnj, "_active_sidebar", return_value=mock_sidebar):
-            result = bnj._get_sidebar_panel()
+            bnj._get_sidebar_panel()
         # sidebar.widget was called
         mock_sidebar.widget.assert_called()
 

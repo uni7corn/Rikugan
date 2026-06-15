@@ -92,7 +92,7 @@ PRIVATE_PROFILE = AnalysisProfile(
     builtin=True,
 )
 
-_BUILTIN_PROFILES: dict[str, AnalysisProfile] = {
+BUILTIN_PROFILES: dict[str, AnalysisProfile] = {
     "default": DEFAULT_PROFILE,
     "private": PRIVATE_PROFILE,
 }
@@ -110,8 +110,8 @@ def get_profile(name: str, custom_profiles: dict[str, dict] | None = None) -> An
     Falls back to DEFAULT_PROFILE if not found.
     """
     # Built-in
-    if name in _BUILTIN_PROFILES:
-        return _BUILTIN_PROFILES[name]
+    if name in BUILTIN_PROFILES:
+        return BUILTIN_PROFILES[name]
 
     # Custom
     if custom_profiles and name in custom_profiles:
@@ -131,11 +131,11 @@ def list_profiles(
     custom_profiles: dict[str, dict] | None = None,
 ) -> list[AnalysisProfile]:
     """List all available profiles (builtins + custom)."""
-    profiles: list[AnalysisProfile] = list(_BUILTIN_PROFILES.values())
+    profiles: list[AnalysisProfile] = list(BUILTIN_PROFILES.values())
 
     if custom_profiles:
         for name, data in sorted(custom_profiles.items()):
-            if name in _BUILTIN_PROFILES:
+            if name in BUILTIN_PROFILES:
                 continue  # don't override builtins
             if isinstance(data, dict):
                 profile = AnalysisProfile.from_dict(data)

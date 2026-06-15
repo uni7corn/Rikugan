@@ -29,7 +29,7 @@ from ..core.sanitize import (
 from ..core.types import Message, Role, TokenUsage, ToolCall, ToolResult
 from ..providers.base import LLMProvider
 from ..skills.registry import SkillRegistry
-from ..state.session import SessionState
+from ..state.session import INTERNAL_EVENT_CANCELLED, INTERNAL_EVENT_KEY, SessionState
 from ..tools.registry import ToolRegistry
 from .context_window import ContextWindowManager
 from .exploration_mode import (
@@ -44,6 +44,7 @@ from .minify import minify_messages, minify_text
 from .modes.exploration import run_exploration_mode
 from .modes.normal import run_normal_loop
 from .modes.plan import run_plan_mode
+from .modes.research import run_research_mode
 from .mutation import MutationRecord, build_reverse_record, capture_pre_state
 from .plan_mode import parse_plan as _parse_plan_impl
 from .subagent import SubagentRunner
@@ -68,6 +69,7 @@ class _ParsedCommand:
     use_plan_mode: bool = False
     use_exploration_mode: bool = False
     explore_only: bool = False
+    use_research_mode: bool = False
     direct_command: str = ""  # e.g. "/memory", "/undo", "/mcp", "/doctor"
     direct_arg: str = ""  # remainder after the direct command token
 
@@ -91,6 +93,8 @@ def _parse_user_command(user_message: str) -> _ParsedCommand:
             use_exploration_mode=True,
             explore_only=True,
         )
+    if lower.startswith("/research "):
+        return _ParsedCommand(message=stripped[10:].strip(), use_research_mode=True)
     if lower == "/memory":
         return _ParsedCommand(message=stripped, direct_command="/memory")
     if lower.startswith("/undo"):
@@ -106,7 +110,7 @@ def _parse_user_command(user_message: str) -> _ParsedCommand:
     return _ParsedCommand(message=stripped)
 
 
-def _append_to_memory_file(md_path: str, content: str) -> None:
+def append_to_memory_file(md_path: str, content: str) -> None:
     """Create RIKUGAN.md with header if missing, then append *content*."""
     if not os.path.exists(md_path):
         with open(md_path, "w", encoding="utf-8") as f:
@@ -267,6 +271,50 @@ _SPAWN_SUBAGENT_SCHEMA = {
         },
     },
 }
+_RESEARCH_NOTE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "research_note",
+        "description": (
+            "Write an Obsidian-compatible markdown research note to the notes/ folder. "
+            "Use this to document findings during research mode. Notes should include "
+            "[[wiki-links]] to cross-reference other notes, mermaid diagrams for call "
+            "flows, and tables for function/address listings. Write notes progressively "
+            "as you discover things — don't wait until the end."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "genre": {
+                    "type": "string",
+                    "description": (
+                        "Folder category for the note: networking, crypto, "
+                        "initialization, data-structures, persistence, "
+                        "anti-analysis, command-and-control, general, etc."
+                    ),
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Note title (becomes the filename slug).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Full markdown body with Obsidian conventions: "
+                        "[[wiki-links]], #tags, mermaid diagrams, tables. "
+                        "Include addresses, decompiled snippets, and evidence."
+                    ),
+                },
+                "related_notes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Titles of other notes to cross-link via [[wiki-links]].",
+                },
+            },
+            "required": ["genre", "title", "content"],
+        },
+    },
+}
 _ASK_USER_SCHEMA = {
     "type": "function",
     "function": {
@@ -334,7 +382,7 @@ class AgentLoop:
         self.plan_mode = False
 
         # Context window manager — compacts history when approaching limits
-        ctx_window = getattr(config.provider, "context_window", 0) or 128000
+        ctx_window = self.provider.context_window() or 128000
         self._context_manager = ContextWindowManager(
             max_tokens=ctx_window,
             compaction_threshold=0.8,
@@ -346,6 +394,11 @@ class AgentLoop:
         # Exploration mode state (populated when /modify or /explore is used)
         self._exploration_state: ExplorationState | None = None
         self._last_knowledge_base: KnowledgeBase | None = None
+
+        # Research mode state (populated when /research is used)
+        from .modes.research import ResearchState as _RS
+
+        self._research_state: _RS | None = None
 
     @property
     def is_running(self) -> bool:
@@ -364,9 +417,35 @@ class AgentLoop:
             self._last_knowledge_base = self._exploration_state.knowledge_base
             self._exploration_state = None
 
+    def _ensure_research_state(self) -> None:
+        """Lazily create a minimal ResearchState for continuation after cancel."""
+        if self._research_state is not None:
+            return
+        from .modes.research import ResearchState
+
+        idb_dir = os.path.dirname(self.session.idb_path) if self.session.idb_path else os.getcwd()
+        notes_dir = os.path.join(idb_dir, "notes")
+        os.makedirs(notes_dir, exist_ok=True)
+        self._research_state = ResearchState(
+            notes_dir=notes_dir,
+            max_explore_turns=self.config.exploration_turn_limit,
+        )
+
+    def _ensure_exploration_state(self) -> ExplorationState:
+        """Lazily create a minimal ExplorationState for continuation after cancel."""
+        if self._exploration_state is None:
+            self._exploration_state = ExplorationState(explore_only=True)
+        return self._exploration_state
+
     def cancel(self) -> None:
         """Cancel the current run."""
         self._cancelled.set()
+        cancel_request = getattr(self.provider, "cancel_current_request", None)
+        if callable(cancel_request):
+            try:
+                cancel_request()
+            except Exception as e:
+                log_debug(f"Provider request abort failed: {e}")
 
     def _drain_queue(self, q: queue.Queue[str]) -> None:
         """Remove any stale item from a maxsize=1 queue (non-blocking)."""
@@ -389,6 +468,19 @@ class AgentLoop:
     def _check_cancelled(self) -> None:
         if self._cancelled.is_set():
             raise CancellationError("Agent run cancelled")
+
+    def _record_cancelled_message(self) -> None:
+        """Persist a UI-only cancellation marker for restored chat history."""
+        last = self.session.messages[-1] if self.session.messages else None
+        if last and last.metadata.get(INTERNAL_EVENT_KEY) == INTERNAL_EVENT_CANCELLED:
+            return
+        self.session.add_message(
+            Message(
+                role=Role.ASSISTANT,
+                content="Cancelled by user",
+                metadata={INTERNAL_EVENT_KEY: INTERNAL_EVENT_CANCELLED},
+            )
+        )
 
     def _wait_for_queue(self, q: queue.Queue[str]) -> str:
         """Block until a value arrives on `q`, checking for cancellation."""
@@ -599,7 +691,7 @@ class AgentLoop:
             issues.append("No skill registry — skills won't be available")
 
         # Check context window
-        ctx = self.config.provider.context_window
+        ctx = self.provider.context_window()
         if ctx >= _MIN_CONTEXT_WINDOW_TOKENS:
             ok.append(f"Context window: {ctx:,} tokens")
         else:
@@ -646,10 +738,10 @@ class AgentLoop:
         system_prompt: str,
         tools_schema: list | None,
         max_retries: int = 0,
-    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any]]:
+    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any, str | None]]:
         """Stream one LLM call, yielding events. Retries on transient errors.
 
-        Returns ``(text, tool_calls, usage, raw_parts)`` where *raw_parts* is
+        Returns ``(text, tool_calls, usage, raw_parts, finish_reason)`` where *raw_parts* is
         provider-specific opaque data (e.g. Gemini parts with thought_signatures)
         that should be stored on the :class:`Message` for faithful history replay.
 
@@ -666,6 +758,8 @@ class AgentLoop:
                 result = yield from self._stream_llm_turn_inner(system_prompt, tools_schema)
                 return result
             except (RateLimitError, ProviderError) as e:
+                if self._cancelled.is_set():
+                    raise CancellationError("Agent run cancelled") from e
                 is_rate_limit = isinstance(e, RateLimitError)
                 if not is_rate_limit and not (e.retryable and attempt < max_retries - 1):
                     raise
@@ -727,6 +821,8 @@ class AgentLoop:
 
     def _prepare_provider_messages(self, system_prompt: str) -> tuple[list, int, TokenUsage | None]:
         """Estimate tokens, compact context if needed, return (provider_messages, estimated_tokens, estimated_usage)."""
+        preserve = self.config.preserve_context
+
         # Fast path: use running token counter to skip expensive O(n)
         # estimation when we're clearly below the compaction threshold.
         fast_estimate = self.session.token_estimate
@@ -753,8 +849,13 @@ class AgentLoop:
                     self.session.messages,
                 )
 
-        ctx_window = self.config.provider.context_window
-        provider_messages = minify_messages(self.session.get_messages_for_provider(context_window=ctx_window))
+        ctx_window = self.provider.context_window()
+        provider_messages = minify_messages(
+            self.session.get_messages_for_provider(
+                context_window=ctx_window,
+                preserve_context=preserve,
+            )
+        )
         estimated_prompt_tokens = self._estimate_prompt_tokens(provider_messages, system_prompt)
         estimated_usage: TokenUsage | None = None
         if estimated_prompt_tokens > 0:
@@ -817,7 +918,7 @@ class AgentLoop:
         self,
         system_prompt: str,
         tools_schema: list | None,
-    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any]]:
+    ) -> Generator[TurnEvent, None, tuple[str, list[ToolCall], TokenUsage | None, Any, str | None]]:
         """Stream one LLM call, yielding events (no retry logic)."""
         assistant_text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -825,6 +926,7 @@ class AgentLoop:
         current_tool_names: dict[str, str] = {}
         last_usage: TokenUsage | None = None
         raw_parts: Any = None
+        finish_reason: str | None = None
 
         provider_messages, estimated_prompt_tokens, estimated_usage = self._prepare_provider_messages(system_prompt)
         # Do not emit a pre-stream estimate — it causes the display to jump
@@ -833,8 +935,6 @@ class AgentLoop:
         stream = self.provider.chat_stream(
             messages=provider_messages,
             tools=tools_schema if tools_schema else None,
-            temperature=self.config.provider.temperature,
-            max_tokens=self.config.provider.max_tokens,
             system=system_prompt,
         )
 
@@ -881,6 +981,9 @@ class AgentLoop:
             if chunk.raw_parts is not None:
                 raw_parts = chunk.raw_parts
 
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
+
         last_usage, need_usage_update = self._finalize_stream_usage(
             last_usage, estimated_usage, estimated_prompt_tokens
         )
@@ -890,8 +993,11 @@ class AgentLoop:
             yield TurnEvent.usage_update(last_usage)
 
         assistant_text = "".join(assistant_text_parts)
-        log_debug(f"Stream done: {chunk_count} chunks, {len(assistant_text)} chars, {len(tool_calls)} tool calls")
-        return (assistant_text, tool_calls, last_usage, raw_parts)
+        log_debug(
+            f"Stream done: {chunk_count} chunks, {len(assistant_text)} chars, "
+            f"{len(tool_calls)} tool calls, finish_reason={finish_reason}"
+        )
+        return (assistant_text, tool_calls, last_usage, raw_parts, finish_reason)
 
     @staticmethod
     def _estimate_prompt_tokens(provider_messages: list[Message], system_prompt: str) -> int:
@@ -1075,7 +1181,7 @@ class AgentLoop:
             else:
                 md_path = os.path.join(idb_dir, "RIKUGAN.md")
                 try:
-                    _append_to_memory_file(md_path, f"- [{category}] {fact}\n")
+                    append_to_memory_file(md_path, f"- [{category}] {fact}\n")
                     content = f"Saved to RIKUGAN.md: [{category}] {fact}"
                     is_err = False
                     log_info(f"save_memory: [{category}] {fact[:80]}")
@@ -1084,6 +1190,44 @@ class AgentLoop:
                     is_err = True
         tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=content, is_error=is_err)
         yield TurnEvent.tool_result_event(tc.id, tc.name, content, is_err)
+        return tr
+
+    def _handle_research_note_tool(self, tc: ToolCall) -> Generator[TurnEvent, None, ToolResult]:
+        """Handle the research_note pseudo-tool — delegates to research mode."""
+        from .modes.research import write_and_review_note
+
+        state = self._research_state
+        assert state is not None  # caller ensures state via _ensure_research_state()
+        genre = tc.arguments.get("genre", "general")
+        title = tc.arguments.get("title", "untitled")
+        content = tc.arguments.get("content", "")
+        related = tc.arguments.get("related_notes", [])
+
+        if not content:
+            err = "Error: 'content' is required."
+            tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=err, is_error=True)
+            yield TurnEvent.tool_result_event(tc.id, tc.name, err, True)
+            return tr
+
+        note = yield from write_and_review_note(
+            state=state,
+            genre=genre,
+            title=title,
+            content=content,
+            related_notes=related,
+            runner_factory=lambda: SubagentRunner(
+                provider=self.provider,
+                tool_registry=self.tools,
+                config=self.config,
+                host_name=self.host_name,
+                skill_registry=self.skills,
+                parent_loop=self,
+            ),
+        )
+
+        result_text = f"Note saved: {note.path}"
+        tr = ToolResult(tool_call_id=tc.id, name=tc.name, content=result_text, is_error=False)
+        yield TurnEvent.tool_result_event(tc.id, tc.name, result_text, False)
         return tr
 
     def _handle_spawn_subagent_tool(self, tc: ToolCall) -> Generator[TurnEvent, None, ToolResult]:
@@ -1239,9 +1383,15 @@ class AgentLoop:
         for tc in tool_calls:
             self._check_cancelled()
             state = self._exploration_state
-            if tc.name == "exploration_report" and state is not None:
+            persisted = self.session.metadata.get("active_mode", "")
+            if tc.name == "research_note" and (self._research_state is not None or persisted == "research"):
+                self._ensure_research_state()
+                tr = yield from self._handle_research_note_tool(tc)
+            elif tc.name == "exploration_report" and (state is not None or persisted in ("exploration", "research")):
+                state = self._ensure_exploration_state()
                 tr = yield from self._handle_exploration_report_tool(tc, state)
-            elif tc.name == "phase_transition" and state is not None:
+            elif tc.name == "phase_transition" and (state is not None or persisted in ("exploration", "research")):
+                state = self._ensure_exploration_state()
                 tr = yield from self._handle_phase_transition_tool(tc, state)
             elif tc.name == "save_memory":
                 tr = yield from self._handle_save_memory_tool(tc)
@@ -1256,8 +1406,18 @@ class AgentLoop:
             tool_results.append(tr)
         return tool_results
 
-    def _build_tools_schema(self, active_skill: Any, use_exploration_mode: bool) -> list:
+    def _build_tools_schema(
+        self, active_skill: Any, use_exploration_mode: bool, use_research_mode: bool = False
+    ) -> list:
         """Build the full tool schema list for a run, including pseudo-tools."""
+        # Include pseudo-tools from a persisted mode so they remain available
+        # after cancel + continue (the LLM still sees mode context in history).
+        persisted_mode = self.session.metadata.get("active_mode", "")
+        if persisted_mode == "research":
+            use_research_mode = True
+        elif persisted_mode == "exploration":
+            use_exploration_mode = True
+
         tools_schema = list(self.tools.to_provider_format())
 
         # Filter to skill-allowed tools if the skill restricts them
@@ -1305,6 +1465,11 @@ class AgentLoop:
             tools_schema.append(_EXPLORATION_REPORT_SCHEMA)
             tools_schema.append(_PHASE_TRANSITION_SCHEMA)
 
+        if use_research_mode:
+            tools_schema.append(_RESEARCH_NOTE_SCHEMA)
+            tools_schema.append(_EXPLORATION_REPORT_SCHEMA)
+            tools_schema.append(_SPAWN_SUBAGENT_SCHEMA)
+
         if self.session.idb_path:
             tools_schema.append(_SAVE_MEMORY_SCHEMA)
 
@@ -1350,6 +1515,7 @@ class AgentLoop:
             use_plan_mode = cmd.use_plan_mode
             use_exploration_mode = cmd.use_exploration_mode
             explore_only = cmd.explore_only
+            use_research_mode = cmd.use_research_mode
 
             user_message, active_skill = self._resolve_skill(user_message)
             if active_skill and active_skill.mode == "exploration":
@@ -1357,12 +1523,37 @@ class AgentLoop:
             elif active_skill and active_skill.mode == "plan":
                 use_plan_mode = True
 
+            # Resume the persisted mode pipeline on follow-up after cancel.
+            # The conversation history already has the prior tool calls/results,
+            # so the LLM will pick up where it left off rather than re-exploring.
+            if not (use_research_mode or use_exploration_mode or use_plan_mode or cmd.direct_command):
+                persisted = self.session.metadata.get("active_mode", "")
+                if persisted == "research":
+                    use_research_mode = True
+                elif persisted == "exploration":
+                    use_exploration_mode = True
+
             self.session.add_message(Message(role=Role.USER, content=user_message))
             system_prompt = minify_text(self._build_system_prompt())
-            tools_schema = self._build_tools_schema(active_skill, use_exploration_mode)
+            tools_schema = self._build_tools_schema(active_skill, use_exploration_mode, use_research_mode)
             log_debug(f"Agent run started: {len(tools_schema)} tools, msg={user_message[:80]!r}")
 
+            if use_research_mode:
+                self.session.metadata["active_mode"] = "research"
+                yield from run_research_mode(
+                    self,
+                    user_message,
+                    system_prompt,
+                    tools_schema,
+                )
+                # Mode completed normally — clear so follow-ups don't
+                # keep re-including mode tools.
+                self.session.metadata.pop("active_mode", None)
+                self.session.metadata.pop("mode_phase", None)
+                return
+
             if use_exploration_mode:
+                self.session.metadata["active_mode"] = "exploration"
                 yield from run_exploration_mode(
                     self,
                     user_message,
@@ -1370,6 +1561,8 @@ class AgentLoop:
                     tools_schema,
                     explore_only=explore_only,
                 )
+                self.session.metadata.pop("active_mode", None)
+                self.session.metadata.pop("mode_phase", None)
                 return
 
             if use_plan_mode or self.plan_mode:
@@ -1385,6 +1578,7 @@ class AgentLoop:
             yield from run_normal_loop(self, system_prompt, tools_schema)
 
         except CancellationError:
+            self._record_cancelled_message()
             yield TurnEvent.cancelled_event()
         except Exception as e:
             log_error(f"Agent loop error: {e}\n{traceback.format_exc()}")
